@@ -1,0 +1,169 @@
+# Minecraft 服务器自动备份脚本
+
+一个基于 **Python + MCSManager API + 123 云盘 API** 的自动化备份工具。  
+
+功能特点：
+- 自动生成 `config.json` 配置文件（首次运行时）
+- 调用 **MCSManager 面板 API** 停止 / 启动服务器
+- 使用 `7z` 压缩服务器目录
+- 压缩完成后立即启动服务器，**上传任务在后台线程执行**
+- 上传至 **123 云盘**（使用官方开放平台 API / `pan123` SDK）
+- 支持多时段 **定时任务**
+- 支持 **日志文件轮转**，便于长期运行
+
+---
+
+## ⚙️ 环境要求
+
+- 操作系统：Linux (推荐 Ubuntu / Debian)
+- Python 版本：`>=3.8`
+- 已安装 [MCSManager 面板](https://mcsmanager.com/)
+- 系统依赖：
+```bash
+sudo apt update && sudo apt install p7zip-full
+```
+
+- Python 依赖：
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## 📝 配置文件说明 (`config.json`)
+
+脚本第一次运行会自动生成示例配置文件并退出，你需要手动修改其中的内容。
+
+```json
+{
+  "mcsmanager": {
+    "base_url": "http://panel.example.com",   // MCSManager 面板地址
+    "apikey": "YOUR_MCSM_APIKEY",             // 面板 API Key
+    "daemonId": "your-daemon-id",             // Daemon ID (可选)
+    "instance_uuid": "your-instance-uuid"     // 服务器实例 UUID
+  },
+  "server": {
+    "server_dir": "/home/mc/server",          // Minecraft 服务器目录
+    "backup_dir": "/home/mc/backups",         // 本地备份目录
+    "compress_cmd": "7z",                     // 压缩命令
+    "compress_args": ["a", "-mx=9"]           // 压缩参数
+  },
+  "123pan": {
+    "client_id": "YOUR_123PAN_CLIENT_ID",     // 123 云盘应用 Client ID
+    "client_secret": "YOUR_123PAN_CLIENT_SECRET", // 123 云盘应用 Client Secret
+    "parent_folder_id": 0                     // 云盘目录 ID（0 为根目录）
+  },
+  "schedule": {
+    "times": ["03:00", "15:00"],              // 每天备份时间（24小时制，支持多个）
+    "timezone": "Asia/Shanghai"               // 时区
+  },
+  "logging": {
+    "log_file": "mc_backup.log",              // 日志文件路径
+    "max_bytes": 10485760,                    // 单个日志文件大小 (10MB)
+    "backup_count": 5                         // 日志轮转数量
+  }
+}
+```
+
+---
+
+## 🚀 使用方法
+
+1. **第一次运行**
+
+   ```bash
+   python3 backup.py
+   ```
+
+   程序会生成 `config.json` 并提示修改。
+
+2. **修改配置文件**
+
+   * 填写 MCSManager 面板 API 地址、apikey、服务器 UUID
+   * 填写 123 云盘的 `client_id` 和 `client_secret`
+
+3. **再次运行**
+
+   ```bash
+   python3 backup.py
+   ```
+
+   程序会进入循环，按照 `config.json` 中的 `schedule.times` 定时执行备份。
+
+---
+
+## 🔄 备份流程
+
+1. 调用 **MCSManager API** 停止服务器
+2. 使用 `7z` 压缩服务器目录
+3. **立即启动服务器**，减少停机时间
+4. 在 **后台线程** 上传压缩包到 **123 云盘**
+5. 写入日志，等待下一个定时任务
+
+---
+
+## 📜 日志
+
+* 默认日志文件：`mc_backup.log`
+* 使用 **轮转日志**，最大 10MB，保留 5 个历史文件
+* 示例查看：
+
+  ```bash
+  tail -f mc_backup.log
+  ```
+
+---
+
+## ⏲️ 定时任务
+
+* 使用 `schedule` 库实现
+* 格式：`HH:MM`（24小时制）
+* 支持配置多个时间点，例如：
+
+  ```json
+  "times": ["03:00", "12:00", "21:00"]
+  ```
+
+脚本运行后会常驻进程，自动在这些时间点触发。
+
+---
+
+## 👨‍💻 后台运行方法
+
+推荐使用 **systemd** 或 **tmux** 管理进程。
+
+### systemd 示例
+
+创建服务文件 `/etc/systemd/system/mcbackup.service`：
+
+```ini
+[Unit]
+Description=Minecraft Backup Service
+After=network.target
+
+[Service]
+WorkingDirectory=/home/mc/backup
+ExecStart=/usr/bin/python3 /home/mc/backup/backup.py
+Restart=always
+User=mc
+
+[Install]
+WantedBy=multi-user.target
+```
+
+启用并启动：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable mcbackup
+sudo systemctl start mcbackup
+```
+
+---
+
+## ⚠️ 注意事项
+
+* 上传部分使用 `pan123` SDK，内部会调用 123 云盘官方 API 进行分片上传
+* 大文件上传时，服务器已提前恢复运行，不影响玩家体验
+* 若上传失败，压缩包仍会保存在本地 `backup_dir`
+* 建议定期检查日志文件，确认上传是否成功
