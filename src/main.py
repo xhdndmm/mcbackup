@@ -118,8 +118,11 @@ def async_upload(filepath):
             logger.info("上传成功: %s", res)
         except Exception as e:
             logger.exception("后台上传失败: %s", e)
-    t = threading.Thread(target=task, daemon=True)
+
+    t = threading.Thread(target=task, daemon=False)
     t.start()
+    return t
+
 
 # 主流程
 def do_backup():
@@ -160,5 +163,5 @@ if __name__ == "__main__":
         logger.info("调度器已停止")
 
 # 调试时使用
-# if __name__ == "__main__":
+#if __name__ == "__main__":
 #     do_backup()
