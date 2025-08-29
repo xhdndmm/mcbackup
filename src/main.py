@@ -138,3 +138,7 @@ if __name__ == "__main__":
     while True:
         schedule.run_pending()
         time.sleep(10)
+
+#调试时使用
+#if __name__ == "__main__":
+#    do_backup()
