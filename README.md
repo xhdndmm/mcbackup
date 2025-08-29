@@ -25,7 +25,7 @@ sudo apt update && sudo apt install p7zip-full
 
 - Python 依赖：
 ```bash
-pip install requests schedule pan123
+pip install -r requirements.txt
 ```
 
 ---

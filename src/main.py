@@ -1,8 +1,11 @@
-import sys, time, json, logging, subprocess, threading, datetime, requests, schedule
+import sys, time, json, logging, subprocess, threading, datetime, requests
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from pan123.auth import get_access_token
 from pan123 import Pan123
+from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.triggers.cron import CronTrigger
+import pytz
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 DEFAULT_CONFIG = {
@@ -48,7 +51,12 @@ cfg = json.load(open(CONFIG_PATH, "r", encoding="utf-8"))
 log_cfg = cfg["logging"]
 logger = logging.getLogger("mc_backup")
 logger.setLevel(logging.INFO)
-handler = RotatingFileHandler(log_cfg["log_file"], maxBytes=log_cfg["max_bytes"], backupCount=log_cfg["backup_count"], encoding="utf-8")
+handler = RotatingFileHandler(
+    log_cfg["log_file"],
+    maxBytes=log_cfg["max_bytes"],
+    backupCount=log_cfg["backup_count"],
+    encoding="utf-8"
+)
 handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 logger.addHandler(handler)
 logger.info("脚本启动")
@@ -58,7 +66,7 @@ MCS_BASE = cfg["mcsmanager"]["base_url"].rstrip("/")
 MCS_APIKEY = cfg["mcsmanager"]["apikey"]
 DAEMON_ID = cfg["mcsmanager"].get("daemonId")
 INSTANCE_UUID = cfg["mcsmanager"]["instance_uuid"]
-HEADERS = {"X-Requested-With":"XMLHttpRequest", "Content-Type":"application/json; charset=utf-8"}
+HEADERS = {"X-Requested-With": "XMLHttpRequest", "Content-Type": "application/json; charset=utf-8"}
 
 def mcs_request(path, method="GET", params=None, json_body=None):
     url = f"{MCS_BASE}{path}"
@@ -70,14 +78,16 @@ def mcs_request(path, method="GET", params=None, json_body=None):
 
 def mcs_stop():
     logger.info("停止 MC 服务器")
-    params={"uuid":INSTANCE_UUID}
-    if DAEMON_ID: params["daemonId"]=DAEMON_ID
+    params = {"uuid": INSTANCE_UUID}
+    if DAEMON_ID:
+        params["daemonId"] = DAEMON_ID
     return mcs_request("/api/protected_instance/stop", params=params)
 
 def mcs_start():
     logger.info("启动 MC 服务器")
-    params={"uuid":INSTANCE_UUID}
-    if DAEMON_ID: params["daemonId"]=DAEMON_ID
+    params = {"uuid": INSTANCE_UUID}
+    if DAEMON_ID:
+        params["daemonId"] = DAEMON_ID
     return mcs_request("/api/protected_instance/open", params=params)
 
 # 压缩过程
@@ -99,7 +109,6 @@ def compress():
 def async_upload(filepath):
     def task():
         try:
-            pan = None
             logger.info("获取 123pan access_token …")
             token = get_access_token(cfg["123pan"]["client_id"], cfg["123pan"]["client_secret"])
             pan = Pan123(token)
@@ -130,15 +139,26 @@ def do_backup():
             logger.error("尝试恢复服务器启动失败，请手动检查")
 
 # 定时任务注册
-for t in cfg["schedule"]["times"]:
-    schedule.every().day.at(t).do(do_backup)
-logger.info("已注册定时: %s", cfg["schedule"]["times"])
+def register_jobs():
+    tz = pytz.timezone(cfg["schedule"]["timezone"])
+    sched = BlockingScheduler(timezone=tz)
+
+    for t in cfg["schedule"]["times"]:
+        hh, mm = t.split(":")
+        trigger = CronTrigger(hour=int(hh), minute=int(mm), timezone=tz)
+        sched.add_job(do_backup, trigger)
+        logger.info("已注册定时任务: 每天 %s:%s (%s)", hh, mm, cfg["schedule"]["timezone"])
+
+    return sched
 
 if __name__ == "__main__":
-    while True:
-        schedule.run_pending()
-        time.sleep(10)
+    sched = register_jobs()
+    logger.info("定时调度器启动")
+    try:
+        sched.start()
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("调度器已停止")
 
-#调试时使用
-#if __name__ == "__main__":
-#    do_backup()
+# 调试时使用
+# if __name__ == "__main__":
+#     do_backup()
