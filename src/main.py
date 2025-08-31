@@ -1,11 +1,10 @@
-import sys, time, json, logging, subprocess, threading, datetime, requests
+import sys, time, json, logging, subprocess, threading, datetime, requests, pytz
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from pan123.auth import get_access_token
 from pan123 import Pan123
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
-import pytz
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 DEFAULT_CONFIG = {
@@ -34,6 +33,9 @@ DEFAULT_CONFIG = {
         "log_file": "mc_backup.log",
         "max_bytes": 10_000_000,
         "backup_count": 5
+    },
+    "backup": {
+        "mode": "cold"
     }
 }
 
@@ -90,6 +92,14 @@ def mcs_start():
         params["daemonId"] = DAEMON_ID
     return mcs_request("/api/protected_instance/open", params=params)
 
+def mcs_command(cmd):
+    logger.info("发送命令到 MC 控制台: %s", cmd)
+    params = {"uuid": INSTANCE_UUID}
+    if DAEMON_ID:
+        params["daemonId"] = DAEMON_ID
+    body = {"command": cmd}
+    return mcs_request("/api/protected_instance/command", method="POST", params=params, json_body=body)
+
 # 压缩过程
 def make_filename():
     return f"mc_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.7z"
@@ -123,23 +133,34 @@ def async_upload(filepath):
     t.start()
     return t
 
-
 # 主流程
 def do_backup():
+    mode = cfg.get("backup", {}).get("mode", "cold")
     try:
-        logger.info("=== 执行备份流程 ===")
-        mcs_stop()
-        time.sleep(8)
-        backup_file = compress()
-        mcs_start()
+        logger.info("=== 执行备份流程 (模式: %s) ===", mode)
+        if mode == "cold":
+            mcs_stop()
+            time.sleep(8)
+            backup_file = compress()
+            mcs_start()
+        elif mode == "hot":
+            mcs_command("save-off")
+            mcs_command("save-all")
+            time.sleep(3)  # 给 MC 保存时间
+            backup_file = compress()
+            mcs_command("save-on")
+        else:
+            raise ValueError(f"未知备份模式: {mode}")
+
         async_upload(backup_file)
         logger.info("备份完成（上传已在后台）")
     except Exception as e:
         logger.exception("备份流程出错: %s", e)
-        try:
-            mcs_start()
-        except:
-            logger.error("尝试恢复服务器启动失败，请手动检查")
+        if mode == "cold":
+            try:
+                mcs_start()
+            except:
+                logger.error("尝试恢复服务器启动失败，请手动检查")
 
 # 定时任务注册
 def register_jobs():

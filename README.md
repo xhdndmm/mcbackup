@@ -4,9 +4,11 @@
 
 功能特点：
 - 自动生成 `config.json` 配置文件（首次运行时）
-- 调用 **MCSManager 面板 API** 停止 / 启动服务器
+- 支持两种备份模式：
+  - **冷备份 (cold)**：停服 → 压缩 → 启动
+  - **热备份 (hot)**：save-off → save-all → 压缩世界文件夹 → save-on（无需停服）
 - 使用 `7z` 压缩服务器目录
-- 压缩完成后立即启动服务器，**上传任务在后台线程执行**
+- 压缩完成后立即恢复正常运行，**上传任务在后台线程执行**
 - 上传至 **123 云盘**（使用官方开放平台 API / `pan123` SDK）
 - 支持多时段 **定时任务**
 - 支持 **日志文件轮转**，便于长期运行
@@ -61,6 +63,9 @@ pip install -r requirements.txt
     "log_file": "mc_backup.log",              // 日志文件路径
     "max_bytes": 10485760,                    // 单个日志文件大小 (10MB)
     "backup_count": 5                         // 日志轮转数量
+  },
+  "backup": {
+    "mode": "cold"                           // 可选: "cold" (停服备份), "hot" (热备份)
   }
 }
 ```
@@ -81,6 +86,7 @@ pip install -r requirements.txt
 
    * 填写 MCSManager 面板 API 地址、apikey、服务器 UUID
    * 填写 123 云盘的 `client_id` 和 `client_secret`
+   * 根据需要设置 `backup.mode` 为 `cold` 或 `hot`
 
 3. **再次运行**
 
@@ -94,11 +100,18 @@ pip install -r requirements.txt
 
 ## 🔄 备份流程
 
+### 冷备份 (cold)
 1. 调用 **MCSManager API** 停止服务器
 2. 使用 `7z` 压缩服务器目录
 3. **立即启动服务器**，减少停机时间
 4. 在 **后台线程** 上传压缩包到 **123 云盘**
-5. 写入日志，等待下一个定时任务
+
+### 热备份 (hot)
+1. 发送 `save-off`（关闭自动存盘）
+2. 发送 `save-all`（强制写入所有区块）
+3. 使用 `7z` 压缩服务器目录
+4. 发送 `save-on`（恢复自动存盘）
+5. 在 **后台线程** 上传压缩包到 **123 云盘**
 
 ---
 
@@ -116,7 +129,7 @@ pip install -r requirements.txt
 
 ## ⏲️ 定时任务
 
-* 使用 `schedule` 库实现
+* 使用 `apscheduler` 库实现
 * 格式：`HH:MM`（24小时制）
 * 支持配置多个时间点，例如：
 
