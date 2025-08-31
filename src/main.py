@@ -1,11 +1,10 @@
-import sys, time, json, logging, subprocess, threading, datetime, requests
+import sys, time, json, logging, subprocess, threading, datetime, requests, pytz
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from pan123.auth import get_access_token
 from pan123 import Pan123
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
-import pytz
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 DEFAULT_CONFIG = {
@@ -19,7 +18,8 @@ DEFAULT_CONFIG = {
         "server_dir": "/home/mc/server",
         "backup_dir": "/home/mc/backups",
         "compress_cmd": "7z",
-        "compress_args": ["a", "-mx=9"]
+        "compress_args": ["a", "-mx=9","-mmt=on"],
+        "world_folders": ["world", "world_nether", "world_the_end"]
     },
     "123pan": {
         "client_id": "YOUR_123PAN_CLIENT_ID",
@@ -34,6 +34,9 @@ DEFAULT_CONFIG = {
         "log_file": "mc_backup.log",
         "max_bytes": 10_000_000,
         "backup_count": 5
+    },
+    "backup": {
+        "mode": "cold"   # 可选: cold / hot
     }
 }
 
@@ -90,19 +93,48 @@ def mcs_start():
         params["daemonId"] = DAEMON_ID
     return mcs_request("/api/protected_instance/open", params=params)
 
-# 压缩过程
-def make_filename():
-    return f"mc_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.7z"
+def mcs_command(cmd):
+    logger.info("发送命令到 MC 控制台: %s", cmd)
+    params = {"uuid": INSTANCE_UUID, "command": cmd}
+    if DAEMON_ID:
+        params["daemonId"] = DAEMON_ID
+    # 使用 GET 请求发送命令
+    return mcs_request("/api/protected_instance/command", method="GET", params=params)
 
-def compress():
+# 压缩过程
+def make_filename(prefix="mc_backup"):
+    return f"{prefix}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.7z"
+
+def compress_full():
+    """压缩整个服务器目录（冷备份用）"""
     out = Path(cfg["server"]["backup_dir"])
     out.mkdir(parents=True, exist_ok=True)
-    fname = make_filename()
+    fname = make_filename("mc_full_backup")
     dest = out / fname
     cmd = [cfg["server"]["compress_cmd"]] + cfg["server"]["compress_args"] + [str(dest), cfg["server"]["server_dir"]]
-    logger.info("执行压缩命令: %s", " ".join(cmd))
+    logger.info("执行冷备份压缩命令: %s", " ".join(cmd))
     subprocess.check_call(cmd)
     logger.info("压缩完成: %s", dest)
+    return str(dest)
+
+def compress_worlds():
+    """只压缩 world 系列文件夹（热备份用）"""
+    out = Path(cfg["server"]["backup_dir"])
+    out.mkdir(parents=True, exist_ok=True)
+    fname = make_filename("mc_world_backup")
+    dest = out / fname
+
+    server_dir = Path(cfg["server"]["server_dir"])
+    world_folders = cfg["server"].get("world_folders", ["world"])
+    inputs = [str(server_dir / w) for w in world_folders if (server_dir / w).exists()]
+
+    if not inputs:
+        raise FileNotFoundError("未找到任何世界文件夹，请检查 config.json 中的 server.world_folders 设置")
+
+    cmd = [cfg["server"]["compress_cmd"]] + cfg["server"]["compress_args"] + [str(dest)] + inputs
+    logger.info("执行热备份压缩命令: %s", " ".join(cmd))
+    subprocess.check_call(cmd)
+    logger.info("世界文件夹压缩完成: %s", dest)
     return str(dest)
 
 # 后台上传线程
@@ -123,23 +155,34 @@ def async_upload(filepath):
     t.start()
     return t
 
-
 # 主流程
 def do_backup():
+    mode = cfg.get("backup", {}).get("mode", "cold")
     try:
-        logger.info("=== 执行备份流程 ===")
-        mcs_stop()
-        time.sleep(8)
-        backup_file = compress()
-        mcs_start()
+        logger.info("=== 执行备份流程 (模式: %s) ===", mode)
+        if mode == "cold":
+            mcs_stop()
+            time.sleep(8)
+            backup_file = compress_full()
+            mcs_start()
+        elif mode == "hot":
+            mcs_command("save-off")
+            mcs_command("save-all")
+            time.sleep(3)  # 给 MC 保存时间
+            backup_file = compress_worlds()
+            mcs_command("save-on")
+        else:
+            raise ValueError(f"未知备份模式: {mode}")
+
         async_upload(backup_file)
         logger.info("备份完成（上传已在后台）")
     except Exception as e:
         logger.exception("备份流程出错: %s", e)
-        try:
-            mcs_start()
-        except:
-            logger.error("尝试恢复服务器启动失败，请手动检查")
+        if mode == "cold":
+            try:
+                mcs_start()
+            except:
+                logger.error("尝试恢复服务器启动失败，请手动检查")
 
 # 定时任务注册
 def register_jobs():
