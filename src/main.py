@@ -1,10 +1,13 @@
-import sys, time, json, logging, subprocess, threading, datetime, requests, pytz
+import sys, time, json, logging, subprocess, threading, datetime, requests, pytz, ssl
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from pan123.auth import get_access_token
 from pan123 import Pan123
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
+from requests.adapters import HTTPAdapter
+from requests.exceptions import RequestException, SSLError
+from urllib3.util.retry import Retry
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 DEFAULT_CONFIG = {
@@ -64,6 +67,49 @@ handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 logger.addHandler(handler)
 logger.info("脚本启动")
 
+# --- TLS 强化 Session + Monkey-patch ---
+from urllib3.poolmanager import PoolManager
+
+class TLS12Adapter(HTTPAdapter):
+    """强制 TLS1.2，兼容部分安全策略较低的服务器"""
+    def __init__(self, *args, **kwargs):
+        self.ssl_context = ssl.create_default_context()
+        try:
+            self.ssl_context.set_ciphers("DEFAULT:@SECLEVEL=1")
+        except Exception:
+            pass
+        try:
+            self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        except Exception:
+            pass
+        super().__init__(*args, **kwargs)
+
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs["ssl_context"] = self.ssl_context
+        return super().init_poolmanager(*args, **kwargs)
+
+def make_robust_session(total_retries=5, backoff_factor=1.0):
+    session = requests.Session()
+    retry = Retry(
+        total=total_retries,
+        read=total_retries,
+        connect=total_retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=[500,502,503,504],
+        allowed_methods=frozenset(['GET','POST','PUT','DELETE','HEAD','OPTIONS']),
+        raise_on_status=False,
+        respect_retry_after_header=True
+    )
+    adapter = TLS12Adapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", HTTPAdapter(max_retries=retry))
+    session.headers.update({"User-Agent": "mc_backup/1.0"})
+    # 注入 pan123 内部
+    requests.sessions.Session = lambda: session
+    return session
+
+_global_requests_session = make_robust_session()
+
 # MCSManager API 调用
 MCS_BASE = cfg["mcsmanager"]["base_url"].rstrip("/")
 MCS_APIKEY = cfg["mcsmanager"]["apikey"]
@@ -98,7 +144,6 @@ def mcs_command(cmd):
     params = {"uuid": INSTANCE_UUID, "command": cmd}
     if DAEMON_ID:
         params["daemonId"] = DAEMON_ID
-    # 使用 GET 请求发送命令
     return mcs_request("/api/protected_instance/command", method="GET", params=params)
 
 # 压缩过程
@@ -106,7 +151,6 @@ def make_filename(prefix="mc_backup"):
     return f"{prefix}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.7z"
 
 def compress_full():
-    """压缩整个服务器目录（冷备份用）"""
     out = Path(cfg["server"]["backup_dir"])
     out.mkdir(parents=True, exist_ok=True)
     fname = make_filename("mc_full_backup")
@@ -118,39 +162,46 @@ def compress_full():
     return str(dest)
 
 def compress_worlds():
-    """只压缩 world 系列文件夹（热备份用）"""
     out = Path(cfg["server"]["backup_dir"])
     out.mkdir(parents=True, exist_ok=True)
     fname = make_filename("mc_world_backup")
     dest = out / fname
-
     server_dir = Path(cfg["server"]["server_dir"])
     world_folders = cfg["server"].get("world_folders", ["world"])
     inputs = [str(server_dir / w) for w in world_folders if (server_dir / w).exists()]
-
     if not inputs:
         raise FileNotFoundError("未找到任何世界文件夹，请检查 config.json 中的 server.world_folders 设置")
-
     cmd = [cfg["server"]["compress_cmd"]] + cfg["server"]["compress_args"] + [str(dest)] + inputs
     logger.info("执行热备份压缩命令: %s", " ".join(cmd))
     subprocess.check_call(cmd)
     logger.info("世界文件夹压缩完成: %s", dest)
     return str(dest)
 
-# 后台上传线程
+# 上传线程
 def async_upload(filepath):
     def task():
-        try:
-            logger.info("获取 123pan access_token …")
-            token = get_access_token(cfg["123pan"]["client_id"], cfg["123pan"]["client_secret"])
-            pan = Pan123(token)
-            pid = cfg["123pan"].get("parent_folder_id", 0)
-            logger.info("开始上传 %s 到 123pan 目录 %s …", filepath, pid)
-            res = pan.file.upload(pid, filepath)
-            logger.info("上传成功: %s", res)
-        except Exception as e:
-            logger.exception("后台上传失败: %s", e)
-
+        max_attempts = 5
+        for attempt in range(1, max_attempts+1):
+            try:
+                logger.info("获取 123pan access_token …")
+                token = get_access_token(cfg["123pan"]["client_id"], cfg["123pan"]["client_secret"])
+                pan = Pan123(token)
+                pid = cfg["123pan"].get("parent_folder_id", 0)
+                logger.info("开始上传 %s 到 123pan 目录 %s … (尝试 %d/%d)", filepath, pid, attempt, max_attempts)
+                res = pan.file.upload(pid, filepath)
+                logger.info("上传成功: %s", res)
+                return
+            except SSLError as e:
+                logger.warning("上传遇到 SSLError: %s", e)
+            except RequestException as e:
+                logger.warning("网络请求异常: %s", e)
+            except Exception as e:
+                logger.exception("上传失败: %s", e)
+            if attempt < max_attempts:
+                sleep_for = min(60, 2**attempt)
+                logger.info("将在 %d 秒后重试…", sleep_for)
+                time.sleep(sleep_for)
+        logger.error("已达到最大尝试次数，上传失败: %s", filepath)
     t = threading.Thread(target=task, daemon=False)
     t.start()
     return t
@@ -168,12 +219,11 @@ def do_backup():
         elif mode == "hot":
             mcs_command("save-off")
             mcs_command("save-all")
-            time.sleep(3)  # 给 MC 保存时间
+            time.sleep(3)
             backup_file = compress_worlds()
             mcs_command("save-on")
         else:
             raise ValueError(f"未知备份模式: {mode}")
-
         async_upload(backup_file)
         logger.info("备份完成（上传已在后台）")
     except Exception as e:
@@ -188,13 +238,11 @@ def do_backup():
 def register_jobs():
     tz = pytz.timezone(cfg["schedule"]["timezone"])
     sched = BlockingScheduler(timezone=tz)
-
     for t in cfg["schedule"]["times"]:
         hh, mm = t.split(":")
         trigger = CronTrigger(hour=int(hh), minute=int(mm), timezone=tz)
         sched.add_job(do_backup, trigger)
         logger.info("已注册定时任务: 每天 %s:%s (%s)", hh, mm, cfg["schedule"]["timezone"])
-
     return sched
 
 if __name__ == "__main__":
@@ -206,5 +254,5 @@ if __name__ == "__main__":
         logger.info("调度器已停止")
 
 # 调试时使用
-#if __name__ == "__main__":
+# if __name__ == "__main__":
 #     do_backup()
