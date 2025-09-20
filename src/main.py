@@ -1,6 +1,6 @@
 # main.py
 # https://github.com/xhdndmm/mcbackup
-# v1.3
+# v1.4
 import sys, time, json, logging, subprocess, threading, datetime, requests, pytz, ssl
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
@@ -9,8 +9,8 @@ from pan123 import Pan123
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from requests.adapters import HTTPAdapter
-from requests.exceptions import RequestException, SSLError
 from urllib3.util.retry import Retry
+from glob import glob
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 DEFAULT_CONFIG = {
@@ -161,11 +161,12 @@ def compress_full():
     out.mkdir(parents=True, exist_ok=True)
     fname = make_filename("mc_full_backup")
     dest = out / fname
-    cmd = [cfg["server"]["compress_cmd"]] + cfg["server"]["compress_args"] + [str(dest), cfg["server"]["server_dir"]]
+    cmd = [cfg["server"]["compress_cmd"]] + cfg["server"]["compress_args"] + ["-v9g", str(dest), cfg["server"]["server_dir"]]
     logger.info("执行冷备份压缩命令: %s", " ".join(cmd))
     subprocess.check_call(cmd)
     logger.info("压缩完成: %s", dest)
     return str(dest)
+
 
 def compress_worlds():
     out = Path(cfg["server"]["backup_dir"])
@@ -177,50 +178,54 @@ def compress_worlds():
     inputs = [str(server_dir / w) for w in world_folders if (server_dir / w).exists()]
     if not inputs:
         raise FileNotFoundError("未找到任何世界文件夹，请检查 config.json 中的 server.world_folders 设置")
-    cmd = [cfg["server"]["compress_cmd"]] + cfg["server"]["compress_args"] + [str(dest)] + inputs
+    cmd = [cfg["server"]["compress_cmd"]] + cfg["server"]["compress_args"] + ["-v9g", str(dest)] + inputs
     logger.info("执行热备份压缩命令: %s", " ".join(cmd))
     subprocess.check_call(cmd)
     logger.info("世界文件夹压缩完成: %s", dest)
     return str(dest)
 
+
 # 上传线程
 def async_upload(filepath):
+    # 自动检测是否分卷（.7z.001, .7z.002 ...）
+    part_files = sorted(glob(filepath + "*"))
+
     def task():
         max_attempts = 5
-        for attempt in range(1, max_attempts+1):
-            try:
-                logger.info("获取 123pan access_token …")
-                token = get_access_token(cfg["123pan"]["client_id"], cfg["123pan"]["client_secret"])
-                pan = Pan123(token)
-                pid = cfg["123pan"].get("parent_folder_id", 0)
-                logger.info("开始上传 %s 到 123pan 目录 %s … (尝试 %d/%d)", filepath, pid, attempt, max_attempts)
-                res = pan.file.upload(pid, filepath)
-                logger.info("上传成功: %s", res)
+        for f in part_files:
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    logger.info("获取 123pan access_token …")
+                    token = get_access_token(cfg["123pan"]["client_id"], cfg["123pan"]["client_secret"])
+                    pan = Pan123(token)
+                    pid = cfg["123pan"].get("parent_folder_id", 0)
+                    logger.info("开始上传 %s 到 123pan 目录 %s … (尝试 %d/%d)", f, pid, attempt, max_attempts)
+                    res = pan.file.upload(pid, f)
+                    logger.info("上传成功: %s", res)
 
-                # 上传成功后根据配置决定是否保留本地
-                storage_mode = cfg.get("backup", {}).get("storage", "both")
-                if storage_mode == "cloud":
-                    try:
-                        Path(filepath).unlink()
-                        logger.info("已删除本地备份文件，仅保留云端: %s", filepath)
-                    except Exception as e:
-                        logger.warning("删除本地备份失败 %s: %s", filepath, e)
-                return
-            except SSLError as e:
-                logger.warning("上传遇到 SSLError: %s", e)
-            except RequestException as e:
-                logger.warning("网络请求异常: %s", e)
-            except Exception as e:
-                logger.exception("上传失败: %s", e)
-            if attempt < max_attempts:
-                sleep_for = min(60, 2**attempt)
-                logger.info("将在 %d 秒后重试…", sleep_for)
-                time.sleep(sleep_for)
-        logger.error("已达到最大尝试次数，上传失败: %s", filepath)
+                    # 上传成功后根据配置决定是否保留本地
+                    storage_mode = cfg.get("backup", {}).get("storage", "both")
+                    if storage_mode == "cloud":
+                        try:
+                            Path(f).unlink()
+                            logger.info("已删除本地备份文件，仅保留云端: %s", f)
+                        except Exception as e:
+                            logger.warning("删除本地备份失败 %s: %s", f, e)
+                    break  # 当前分卷成功 → 进入下一个分卷
+                except Exception as e:
+                    logger.exception("上传失败: %s", e)
+                    if attempt < max_attempts:
+                        sleep_for = min(60, 2 ** attempt)
+                        logger.info("将在 %d 秒后重试…", sleep_for)
+                        time.sleep(sleep_for)
+                    else:
+                        logger.error("分卷上传失败（超过最大尝试次数）: %s", f)
+                        return
+        logger.info("所有分卷上传完成")
+
     t = threading.Thread(target=task, daemon=False)
     t.start()
     return t
-
 
 # 主流程
 def do_backup():
