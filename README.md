@@ -65,7 +65,10 @@ pip install -r requirements.txt
     "backup_count": 5                         // 日志轮转数量
   },
   "backup": {
-    "mode": "cold"                           // 可选: "cold" (停服备份), "hot" (热备份)
+    "mode": "cold",                          // 可选: cold / hot
+    "keep_days": 7,                          // 保留多少天
+    "keep_count": 10,                        // 至少保留多少个最新备份
+    "storage": "both"                        // 可选: both / cloud
   }
 }
 ```
@@ -86,6 +89,9 @@ pip install -r requirements.txt
 
    * 填写 MCSManager 面板 API 地址、apikey、服务器 UUID
    * 填写 123 云盘的 `client_id` 和 `client_secret`
+   > [!TIP]
+   >
+   > 123云盘API在[这里](https://www.123pan.com/developer)申请，理由合理基本能成功。
    * 根据需要设置 `backup.mode` 为 `cold` 或 `hot`
 
 3. **再次运行**
