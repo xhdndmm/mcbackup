@@ -89,9 +89,9 @@ pip install -r requirements.txt
 
    * 填写 MCSManager 面板 API 地址、apikey、服务器 UUID
    * 填写 123 云盘的 `client_id` 和 `client_secret`
-   > [!TIP]
-   >
-   > 123云盘API在[这里](https://www.123pan.com/developer)申请，理由合理基本能成功。
+  > [!TIP]
+  >
+  > 123云盘API在[这里](https://www.123pan.com/developer)申请，理由合理基本能成功。
    * 根据需要设置 `backup.mode` 为 `cold` 或 `hot`
 
 3. **再次运行**
