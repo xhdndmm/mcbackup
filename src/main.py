@@ -1,3 +1,6 @@
+# main.py
+# https://github.com/xhdndmm/mcbackup
+# v1.3
 import sys, time, json, logging, subprocess, threading, datetime, requests, pytz, ssl
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
@@ -39,7 +42,10 @@ DEFAULT_CONFIG = {
         "backup_count": 5
     },
     "backup": {
-        "mode": "cold"   # 可选: cold / hot
+        "mode": "cold",
+        "keep_days": 7,
+        "keep_count": 10,
+        "storage": "both"
     }
 }
 
@@ -190,6 +196,15 @@ def async_upload(filepath):
                 logger.info("开始上传 %s 到 123pan 目录 %s … (尝试 %d/%d)", filepath, pid, attempt, max_attempts)
                 res = pan.file.upload(pid, filepath)
                 logger.info("上传成功: %s", res)
+
+                # 上传成功后根据配置决定是否保留本地
+                storage_mode = cfg.get("backup", {}).get("storage", "both")
+                if storage_mode == "cloud":
+                    try:
+                        Path(filepath).unlink()
+                        logger.info("已删除本地备份文件，仅保留云端: %s", filepath)
+                    except Exception as e:
+                        logger.warning("删除本地备份失败 %s: %s", filepath, e)
                 return
             except SSLError as e:
                 logger.warning("上传遇到 SSLError: %s", e)
@@ -205,6 +220,7 @@ def async_upload(filepath):
     t = threading.Thread(target=task, daemon=False)
     t.start()
     return t
+
 
 # 主流程
 def do_backup():
