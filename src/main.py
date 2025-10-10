@@ -198,7 +198,7 @@ def async_upload(filepath):
                 parent_id = cfg["123pan"].get("parent_folder_id", 0)
 
                 # 列出 parent 目录下的子文件／文件夹
-                folders = pan.file.list(parent_id)
+                folders = pan.file.list(parent_id, 1000, 1)
 
                 # 查找是否已有 name == today_str 的子目录
                 folder = next((f for f in folders if f.get("name") == today_str and f.get("is_dir", False)), None)
