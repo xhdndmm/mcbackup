@@ -1,16 +1,20 @@
 # main.py
 # https://github.com/xhdndmm/mcbackup
 # v1.5
-import sys, time, json, logging, subprocess, threading, datetime, requests, pytz, ssl
-from pathlib import Path
-from logging.handlers import RotatingFileHandler
-from pan123.auth import get_access_token
-from pan123 import Pan123
-from apscheduler.schedulers.blocking import BlockingScheduler
-from apscheduler.triggers.cron import CronTrigger
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-from glob import glob
+
+try:
+    import sys, time, json, logging, subprocess, threading, datetime, requests, pytz, ssl
+    from pathlib import Path
+    from logging.handlers import RotatingFileHandler
+    from pan123.auth import get_access_token
+    from pan123 import Pan123
+    from apscheduler.schedulers.blocking import BlockingScheduler
+    from apscheduler.triggers.cron import CronTrigger
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+    from glob import glob
+except Exception as err:
+    print("无法导入所有依赖项",err)
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 DEFAULT_CONFIG = {
@@ -198,15 +202,34 @@ def async_upload(filepath):
                 parent_id = cfg["123pan"].get("parent_folder_id", 0)
 
                 # 列出 parent 目录下的子文件／文件夹
-                folders = pan.file.list(parent_id, 1000, 1)
+                folders = pan.file.list(parent_id, 100)
 
                 # 查找是否已有 name == today_str 的子目录
-                folder = next((f for f in folders if f.get("name") == today_str and f.get("is_dir", False)), None)
+                result = pan.file.list(parent_id, 100)
+                folders = result.get("fileList", [])
+
+                # 查找是否已有 name == today_str 的文件夹（type==1 表示目录）
+                folder = next(
+                    (f for f in folders if f.get("filename") == today_str and f.get("type") == 1),
+                    None,
+                )
+
+                if folder:
+                    date_folder_id = folder["fileId"]
+                else:
+                    logger.info("在父目录 %s 下创建日期子目录: %s", parent_id, today_str)
+                    res = pan.file.mkdir(today_str, parent_id)
+                    date_folder_id = (
+                        res.get("data", {}).get("id")
+                        or res.get("id")
+                        or res.get("fileId")  # 兼容不同返回格式
+                    )
+
                 if folder:
                     date_folder_id = folder["id"]
                 else:
                     logger.info("在父目录 %s 下创建日期子目录: %s", parent_id, today_str)
-                    res = pan.file.mkdir(parent_id, today_str)
+                    res = pan.file.mkdir(today_str, parent_id)
                     # 依据 SDK 返回格式取 id
                     date_folder_id = res.get("data", {}).get("id") or res.get("id")
 
@@ -294,14 +317,14 @@ def register_jobs():
         logger.info("已注册每日 %s:%s 备份任务（时区 %s）", hh, mm, cfg["schedule"]["timezone"])
     return sched
 
-if __name__ == "__main__":
-    sched = register_jobs()
-    logger.info("定时器启动")
-    try:
-        sched.start()
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("调度停止")
+#if __name__ == "__main__":
+#    sched = register_jobs()
+#    logger.info("定时器启动")
+#    try:
+#        sched.start()
+#    except (KeyboardInterrupt, SystemExit):
+#        logger.info("调度停止")
 
 # 调试时使用
-# if __name__ == "__main__":
-#     do_backup()
+if __name__ == "__main__":
+    do_backup()
