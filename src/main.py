@@ -8,13 +8,15 @@ try:
     from logging.handlers import RotatingFileHandler
     from pan123.auth import get_access_token
     from pan123 import Pan123
+    from pan123 import file as pan_file
     from apscheduler.schedulers.blocking import BlockingScheduler
     from apscheduler.triggers.cron import CronTrigger
     from requests.adapters import HTTPAdapter
     from urllib3.util.retry import Retry
     from glob import glob
+    from requests import HTTPError
 except Exception as err:
-    print("无法导入所有依赖项",err)
+    print("无法导入所有依赖项", err)
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 DEFAULT_CONFIG = {
@@ -53,6 +55,29 @@ DEFAULT_CONFIG = {
     }
 }
 
+# pan123 SDK补丁(适用于v0.1.10)
+def fixed_mkdir(self, name: str, parent_id: int):
+    url = self.base_url + "/upload/v1/file/mkdir"
+    payload = {
+        "name": name,
+        "parentID": parent_id
+    }
+    # ✅ 必须是 POST + json
+    r = requests.post(url, json=payload, headers=self.header)
+    if r.status_code != 200:
+        raise requests.HTTPError(f"{r.status_code}: {r.text}")
+    try:
+        resp = r.json()
+    except Exception:
+        logging.error(f"mkdir 响应无法解析为 JSON: {r.text}")
+        raise
+    logging.info(f"mkdir 返回: {resp}")
+    return resp
+
+# 替换原方法
+pan_file.File.mkdir = fixed_mkdir
+
+# 生成配置文件
 def ensure_config():
     if not CONFIG_PATH.exists():
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -109,8 +134,8 @@ def make_robust_session(total_retries=5, backoff_factor=1.0):
     adapter = TLS12Adapter(max_retries=retry)
     session.mount("https://", adapter)
     session.mount("http://", HTTPAdapter(max_retries=retry))
-    session.headers.update({"User-Agent": "mc_backup/1.0"})
-    # 注入 pan123 内部使用的 session
+    session.headers.update({"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0"})
+    # 注入 pan123 内部使用的 session（尽量保持兼容）
     requests.sessions.Session = lambda: session
     return session
 
@@ -187,74 +212,122 @@ def compress_worlds():
 def async_upload(filepath):
     part_files = sorted(glob(filepath + "*"))
 
+    def _extract_id(obj):
+        """从不同 SDK 返回格式中稳健提取 id"""
+        if not obj:
+            return None
+        for key in ("id", "fileId", "fid", "data"):
+            if key == "data" and isinstance(obj.get("data"), dict):
+                # data 内可能有 id 或 fileId
+                if obj["data"].get("id"):
+                    return obj["data"]["id"]
+                if obj["data"].get("fileId"):
+                    return obj["data"]["fileId"]
+            else:
+                if obj.get(key):
+                    return obj.get(key)
+        return None
+
     def task():
         max_attempts = 5
         pan = None
         date_folder_id = None
         today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        configured_parent = cfg["123pan"].get("parent_folder_id", 0)
+        parent_id = configured_parent if configured_parent is not None else 0
 
-        # 第一步：初始化 pan、获取或创建日期子文件夹
+        # 第一步：初始化 pan、获取或创建日期子文件夹（带回退逻辑）
         for attempt in range(1, max_attempts + 1):
             try:
                 logger.info("获取 123pan access_token … (尝试 %d/%d)", attempt, max_attempts)
                 token = get_access_token(cfg["123pan"]["client_id"], cfg["123pan"]["client_secret"])
                 pan = Pan123(token)
-                parent_id = cfg["123pan"].get("parent_folder_id", 0)
 
-                # 列出 parent 目录下的子文件／文件夹
-                folders = pan.file.list(parent_id, 100)
+                # 尝试列出 parent 目录下的文件夹（若失败则回退到根目录 0）
+                try_parents = [parent_id]
+                if parent_id != 0:
+                    try_parents.append(0)  # 回退到根目录的候选
 
-                # 查找是否已有 name == today_str 的子目录
-                result = pan.file.list(parent_id, 100)
-                folders = result.get("fileList", [])
+                listed = None
+                used_parent = None
+                for pid in try_parents:
+                    try:
+                        logger.info("列出父目录 %s 的内容（尝试父 id=%s）", parent_id, pid)
+                        result = pan.file.list(pid, 100)
+                        # SDK 可能返回 dict，文件列表键名可能是 fileList / results / list 等，尝试兼容
+                        folders = result.get("fileList") or result.get("results") or result.get("list") or result.get("data", {}).get("fileList") or []
+                        listed = folders
+                        used_parent = pid
+                        break
+                    except HTTPError as e:
+                        # 如果是 Not Found，说明 pid 无效或无权限，尝试下一个 pid（通常会是 0）
+                        txt = str(e)
+                        logger.warning("列出父目录 %s 失败: %s", pid, txt)
+                        continue
+                    except Exception as e:
+                        logger.exception("列出父目录 %s 时出现异常: %s", pid, e)
+                        raise
 
-                # 查找是否已有 name == today_str 的文件夹（type==1 表示目录）
+                if listed is None:
+                    raise RuntimeError("无法列出任何父目录，可能 parent_folder_id 设置错误或 token 权限不足")
+
+                # 查找是否已有 name == today_str 的子目录（type==1 表示目录）
                 folder = next(
-                    (f for f in folders if f.get("filename") == today_str and f.get("type") == 1),
+                    (f for f in listed if (f.get("filename") == today_str or f.get("name") == today_str) and int(f.get("type", 1)) == 1),
                     None,
                 )
 
                 if folder:
-                    date_folder_id = folder["fileId"]
+                    date_folder_id = _extract_id(folder)
+                    logger.info("找到已有日期目录 %s (ID=%s) 在父目录 %s", today_str, date_folder_id, used_parent)
                 else:
-                    logger.info("在父目录 %s 下创建日期子目录: %s", parent_id, today_str)
-                    res = pan.file.mkdir(today_str, parent_id)
-                    date_folder_id = (
-                        res.get("data", {}).get("id")
-                        or res.get("id")
-                        or res.get("fileId")  # 兼容不同返回格式
-                    )
+                    # 创建日期目录
+                    logger.info("在父目录 %s 下创建日期子目录: %s", used_parent, today_str)
+                    res = pan.file.mkdir(today_str, used_parent)
+                    date_folder_id = _extract_id(res)
+                    logger.info("创建返回: %s -> 目录 ID=%s", res if isinstance(res, dict) else str(res), date_folder_id)
 
-                if folder:
-                    date_folder_id = folder["id"]
-                else:
-                    logger.info("在父目录 %s 下创建日期子目录: %s", parent_id, today_str)
-                    res = pan.file.mkdir(today_str, parent_id)
-                    # 依据 SDK 返回格式取 id
-                    date_folder_id = res.get("data", {}).get("id") or res.get("id")
+                if not date_folder_id:
+                    raise RuntimeError("未能获得日期目录的 ID（返回格式不匹配）")
 
-                logger.info("上传目标为目录 %s (ID=%s)", today_str, date_folder_id)
-                if date_folder_id is None:
-                    raise RuntimeError("未能获得日期目录的 ID")
+                # 成功获取到目录 ID 后跳出重试循环
                 break
+
+            except HTTPError as e:
+                logger.exception("获取/创建日期目录失败（HTTPError）: %s", e)
+                # 对于 HTTPError, 如果是 404/Not Found，尝试回退到根目录再试
+                if attempt < max_attempts:
+                    wait = min(30, 2**attempt)
+                    logger.info("等待 %d 秒后重试 …", wait)
+                    time.sleep(wait)
+                    continue
+                else:
+                    logger.error("多次通过 HTTP 请求失败，取消上传")
+                    return
             except Exception as e:
                 logger.exception("获取/创建日期目录失败: %s", e)
                 if attempt < max_attempts:
                     wait = min(30, 2**attempt)
                     logger.info("等待 %d 秒后重试 …", wait)
                     time.sleep(wait)
+                    continue
                 else:
                     logger.error("多次失败，取消上传")
                     return
 
+        logger.info("上传目标为目录 %s (ID=%s)", today_str, date_folder_id)
+
         # 第二步：上传各个分卷到这个日期目录
         for f in part_files:
+            uploaded = False
             for attempt in range(1, max_attempts + 1):
                 try:
-                    logger.info("上传 %s 到 123pan %s (尝试 %d/%d)", f, today_str, attempt, max_attempts)
+                    logger.info("上传 %s 到 123pan (%s) (尝试 %d/%d)", f, today_str, attempt, max_attempts)
                     res = pan.file.upload(date_folder_id, f)
                     logger.info("上传成功: %s", res)
+                    uploaded = True
 
+                    # 如果配置为只保留云端，删除本地分卷
                     if cfg.get("backup", {}).get("storage", "both") == "cloud":
                         try:
                             Path(f).unlink()
@@ -262,17 +335,28 @@ def async_upload(filepath):
                         except Exception as e:
                             logger.warning("本地删除失败: %s", e)
                     break
+                except HTTPError as e:
+                    logger.exception("上传失败（HTTPError）: %s", e)
+                    if attempt < max_attempts:
+                        sleep_for = min(60, 2**attempt)
+                        logger.info("等待 %d 秒后重试 …", sleep_for)
+                        time.sleep(sleep_for)
+                        continue
+                    else:
+                        logger.error("上传分卷最终失败: %s", f)
                 except Exception as e:
                     logger.exception("上传失败: %s", e)
                     if attempt < max_attempts:
                         sleep_for = min(60, 2**attempt)
                         logger.info("等待 %d 秒后重试 …", sleep_for)
                         time.sleep(sleep_for)
+                        continue
                     else:
-                        logger.error("上传分卷超限失败: %s", f)
-                        return
+                        logger.error("上传分卷最终失败: %s", f)
+            if not uploaded:
+                logger.error("文件 %s 上传失败，已跳过后续重试", f)
 
-        logger.info("所有分卷上传完成")
+        logger.info("所有分卷上传流程结束 (部分文件可能上传失败)")
 
     t = threading.Thread(target=task, daemon=False)
     t.start()
