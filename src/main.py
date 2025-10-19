@@ -62,7 +62,7 @@ def fixed_mkdir(self, name: str, parent_id: int):
         "name": name,
         "parentID": parent_id
     }
-    # ✅ 必须是 POST + json
+    # 必须是 POST + json
     r = requests.post(url, json=payload, headers=self.header)
     if r.status_code != 200:
         raise requests.HTTPError(f"{r.status_code}: {r.text}")
@@ -240,6 +240,7 @@ def async_upload(filepath):
         for attempt in range(1, max_attempts + 1):
             try:
                 logger.info("获取 123pan access_token … (尝试 %d/%d)", attempt, max_attempts)
+                time.sleep(1)
                 token = get_access_token(cfg["123pan"]["client_id"], cfg["123pan"]["client_secret"])
                 pan = Pan123(token)
 
@@ -401,14 +402,14 @@ def register_jobs():
         logger.info("已注册每日 %s:%s 备份任务（时区 %s）", hh, mm, cfg["schedule"]["timezone"])
     return sched
 
-#if __name__ == "__main__":
-#    sched = register_jobs()
-#    logger.info("定时器启动")
-#    try:
-#        sched.start()
-#    except (KeyboardInterrupt, SystemExit):
-#        logger.info("调度停止")
+if __name__ == "__main__":
+    sched = register_jobs()
+    logger.info("定时器启动")
+    try:
+        sched.start()
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("调度停止")
 
 # 调试时使用
-if __name__ == "__main__":
-    do_backup()
+#if __name__ == "__main__":
+#    do_backup()
