@@ -1,6 +1,6 @@
-# Minecraft 服务器自动备份脚本
-
-一个基于 **Python + MCSManager API + 123 云盘 API** 的自动化备份工具。  
+# 欢迎浏览本项目！
+## 这是什么？
+一个基于 **Python + MCSManager API + 123 云盘 API** 的Minecraft服务器自动化备份工具。  
 
 功能特点：
 - 自动生成 `config.json` 配置文件（首次运行时）
@@ -15,11 +15,11 @@
 
 ---
 
-## ⚙️ 环境要求
+## 环境要求
 
-- 操作系统：Linux (推荐 Ubuntu / Debian)
-- Python 版本：`>=3.8`
-- 已安装 [MCSManager 面板](https://mcsmanager.com/)
+- 操作系统：Linux
+- Python（版本：`>=3.8`）
+- [MCSManager 面板](https://mcsmanager.com/)
 - 系统依赖：
 ```bash
 sudo apt update && sudo apt install p7zip-full
@@ -32,7 +32,7 @@ pip install -r requirements.txt
 
 ---
 
-## 📝 配置文件说明 (`config.json`)
+## 配置文件说明 (`config.json`)
 
 脚本第一次运行会自动生成示例配置文件并退出，你需要手动修改其中的内容。
 
@@ -41,8 +41,8 @@ pip install -r requirements.txt
   "mcsmanager": {
     "base_url": "http://panel.example.com",   // MCSManager 面板地址
     "apikey": "YOUR_MCSM_APIKEY",             // 面板 API Key
-    "daemonId": "your-daemon-id",             // Daemon ID (可选)
-    "instance_uuid": "your-instance-uuid"     // 服务器实例 UUID
+    "daemonId": "your-daemon-id",             // 实例ID
+    "instance_uuid": "your-instance-uuid"     // 节点ID
   },
   "server": {
     "server_dir": "/home/mc/server",          // Minecraft 服务器目录
@@ -51,8 +51,8 @@ pip install -r requirements.txt
     "compress_args": ["a", "-mx=9"]           // 压缩参数
   },
   "123pan": {
-    "client_id": "YOUR_123PAN_CLIENT_ID",     // 123 云盘应用 Client ID
-    "client_secret": "YOUR_123PAN_CLIENT_SECRET", // 123 云盘应用 Client Secret
+    "client_id": "YOUR_123PAN_CLIENT_ID",     // 123 云盘API Client ID
+    "client_secret": "YOUR_123PAN_CLIENT_SECRET", // 123 云盘API Client Secret
     "parent_folder_id": 0                     // 云盘目录 ID（0 为根目录）
   },
   "schedule": {
@@ -68,14 +68,14 @@ pip install -r requirements.txt
     "mode": "cold",                          // 可选: cold / hot
     "keep_days": 7,                          // 保留多少天
     "keep_count": 10,                        // 至少保留多少个最新备份
-    "storage": "both"                        // 可选: both / cloud
+    "storage": "both"                        // 可选: both（云端+本地） / cloud（云端）
   }
 }
 ```
 
 ---
 
-## 🚀 使用方法
+## 使用方法
 
 1. **第一次运行**
 
@@ -87,7 +87,7 @@ pip install -r requirements.txt
 
 2. **修改配置文件**
 
-   * 填写 MCSManager 面板 API 地址、apikey、服务器 UUID
+   * 填写 MCSManager 面板 API 地址、apikey、节点ID、实例ID
    * 填写 123 云盘的 `client_id` 和 `client_secret`
   > [!TIP]
   >
@@ -104,7 +104,7 @@ pip install -r requirements.txt
 
 ---
 
-## 🔄 备份流程
+## 备份流程
 
 ### 冷备份 (cold)
 1. 调用 **MCSManager API** 停止服务器
@@ -121,19 +121,19 @@ pip install -r requirements.txt
 
 ---
 
-## 📜 日志
+## 日志
 
 * 默认日志文件：`mc_backup.log`
 * 使用 **轮转日志**，最大 10MB，保留 5 个历史文件
 * 示例查看：
 
   ```bash
-  tail -f mc_backup.log
+  cat mc_backup.log
   ```
 
 ---
 
-## ⏲️ 定时任务
+## 定时任务
 
 * 使用 `apscheduler` 库实现
 * 格式：`HH:MM`（24小时制）
@@ -147,7 +147,7 @@ pip install -r requirements.txt
 
 ---
 
-## 👨‍💻 后台运行方法
+## 后台运行方法
 
 推荐使用 **systemd** 或 **tmux** 管理进程。
 
@@ -161,8 +161,8 @@ Description=Minecraft Backup Service
 After=network.target
 
 [Service]
-WorkingDirectory=/home/mc/backup
-ExecStart=/usr/bin/python3 /home/mc/backup/backup.py
+WorkingDirectory=/path/to/backup
+ExecStart=/path/to/python3 /path/to/backup/backup.py
 Restart=always
 User=mc
 
@@ -180,9 +180,9 @@ sudo systemctl start mcbackup
 
 ---
 
-## ⚠️ 注意事项
+## 注意意事项
 
 * 上传部分使用 `pan123` SDK，内部会调用 123 云盘官方 API 进行分片上传
 * 大文件上传时，服务器已提前恢复运行，不影响玩家体验
 * 若上传失败，压缩包仍会保存在本地 `backup_dir`
-* 建议定期检查日志文件，确认上传是否成功
+* **建议定期检查日志文件，确认上传是否成功**

@@ -1,5 +1,5 @@
 requests
 schedule
-pan123
+pan123==0.1.10
 apscheduler
 pytz
