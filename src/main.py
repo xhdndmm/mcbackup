@@ -1,23 +1,25 @@
 # main.py
-# https://github.com/xhdndmm/mcbackup
-# v1.5
+# v1.6
 
-try:
-    import sys, time, json, logging, subprocess, threading, datetime, requests, pytz, ssl
-    from pathlib import Path
-    from logging.handlers import RotatingFileHandler
-    from pan123.auth import get_access_token
-    from pan123 import Pan123
-    from pan123 import file as pan_file
-    from apscheduler.schedulers.blocking import BlockingScheduler
-    from apscheduler.triggers.cron import CronTrigger
-    from requests.adapters import HTTPAdapter
-    from urllib3.util.retry import Retry
-    from glob import glob
-    from requests import HTTPError
-except Exception as err:
-    print("无法导入所有依赖项", err)
+import sys
+import time
+import json
+import subprocess
+import threading
+import datetime
+import ssl
+from pathlib import Path
+from glob import glob
+import logging
+from logging.handlers import RotatingFileHandler
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import pytz
+from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.triggers.cron import CronTrigger
 
+# --- 配置部分 ---
 CONFIG_PATH = Path(__file__).parent / "config.json"
 DEFAULT_CONFIG = {
     "mcsmanager": {
@@ -30,12 +32,14 @@ DEFAULT_CONFIG = {
         "server_dir": "/home/mc/server",
         "backup_dir": "/home/mc/backups",
         "compress_cmd": "7z",
-        "compress_args": ["a", "-mx=9","-mmt=on"],
+        "compress_args": ["a", "-mx=9", "-mmt=on"],
         "world_folders": ["world", "world_nether", "world_the_end"]
     },
-    "123pan": {
-        "client_id": "YOUR_123PAN_CLIENT_ID",
-        "client_secret": "YOUR_123PAN_CLIENT_SECRET",
+    "123pan_http": {
+        # 假设这是 pan123 的 HTTP API 基础 URL，如 “https://open-api.123pan.com”
+        "api_base_url": "https://open-api.123pan.com",
+        "client_id": "YOUR_CLIENT_ID",
+        "client_secret": "YOUR_CLIENT_SECRET",
         "parent_folder_id": 0
     },
     "schedule": {
@@ -55,29 +59,6 @@ DEFAULT_CONFIG = {
     }
 }
 
-# pan123 SDK补丁(适用于v0.1.10)
-def fixed_mkdir(self, name: str, parent_id: int):
-    url = self.base_url + "/upload/v1/file/mkdir"
-    payload = {
-        "name": name,
-        "parentID": parent_id
-    }
-    # 必须是 POST + json
-    r = requests.post(url, json=payload, headers=self.header)
-    if r.status_code != 200:
-        raise requests.HTTPError(f"{r.status_code}: {r.text}")
-    try:
-        resp = r.json()
-    except Exception:
-        logging.error(f"mkdir 响应无法解析为 JSON: {r.text}")
-        raise
-    logging.info(f"mkdir 返回: {resp}")
-    return resp
-
-# 替换原方法
-pan_file.File.mkdir = fixed_mkdir
-
-# 生成配置文件
 def ensure_config():
     if not CONFIG_PATH.exists():
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -88,11 +69,11 @@ def ensure_config():
 ensure_config()
 cfg = json.load(open(CONFIG_PATH, "r", encoding="utf-8"))
 
-# 日志
+# --- 日志设置 ---
 log_cfg = cfg["logging"]
 logger = logging.getLogger("mc_backup")
 logger.setLevel(logging.INFO)
-handler = RotatingFileHandler(
+handler = logging.handlers.RotatingFileHandler(
     log_cfg["log_file"],
     maxBytes=log_cfg["max_bytes"],
     backupCount=log_cfg["backup_count"],
@@ -102,7 +83,7 @@ handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 logger.addHandler(handler)
 logger.info("脚本启动")
 
-# TLS 强化 Session
+# --- TLS 强化 Session ---
 class TLS12Adapter(HTTPAdapter):
     def __init__(self, *args, **kwargs):
         self.ssl_context = ssl.create_default_context()
@@ -115,6 +96,7 @@ class TLS12Adapter(HTTPAdapter):
         except Exception:
             pass
         super().__init__(*args, **kwargs)
+
     def init_poolmanager(self, *args, **kwargs):
         kwargs["ssl_context"] = self.ssl_context
         return super().init_poolmanager(*args, **kwargs)
@@ -135,13 +117,11 @@ def make_robust_session(total_retries=5, backoff_factor=1.0):
     session.mount("https://", adapter)
     session.mount("http://", HTTPAdapter(max_retries=retry))
     session.headers.update({"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0"})
-    # 注入 pan123 内部使用的 session（尽量保持兼容）
-    requests.sessions.Session = lambda: session
     return session
 
-_global_requests_session = make_robust_session()
+_http = make_robust_session()
 
-# MCSManager API
+# --- MCSManager API 配置 ---
 MCS_BASE = cfg["mcsmanager"]["base_url"].rstrip("/")
 MCS_APIKEY = cfg["mcsmanager"]["apikey"]
 DAEMON_ID = cfg["mcsmanager"].get("daemonId")
@@ -152,7 +132,7 @@ def mcs_request(path, method="GET", params=None, json_body=None):
     url = f"{MCS_BASE}{path}"
     params = params or {}
     params["apikey"] = MCS_APIKEY
-    r = requests.request(method, url, params=params, json=json_body, headers=HEADERS, timeout=30)
+    r = _http.request(method, url, params=params, json=json_body, headers=HEADERS, timeout=30)
     r.raise_for_status()
     return r.json()
 
@@ -161,14 +141,14 @@ def mcs_stop():
     params = {"uuid": INSTANCE_UUID}
     if DAEMON_ID:
         params["daemonId"] = DAEMON_ID
-    return mcs_request("/api/protected_instance/stop", params=params)
+    return mcs_request("/api/protected_instance/stop", method="GET", params=params)
 
 def mcs_start():
     logger.info("启动 MC 服务器")
     params = {"uuid": INSTANCE_UUID}
     if DAEMON_ID:
         params["daemonId"] = DAEMON_ID
-    return mcs_request("/api/protected_instance/open", params=params)
+    return mcs_request("/api/protected_instance/open", method="GET", params=params)
 
 def mcs_command(cmd):
     logger.info("发送命令到 MC 控制台: %s", cmd)
@@ -177,7 +157,141 @@ def mcs_command(cmd):
         params["daemonId"] = DAEMON_ID
     return mcs_request("/api/protected_instance/command", method="GET", params=params)
 
-# 压缩
+# --- 123pan HTTP API 上传实现 ---
+def get_access_token_http():
+    """通过 HTTP 接口获取 access_token（假设接口为 api_base_url + '/auth/token'）"""
+    conf = cfg["123pan_http"]
+    url = f"{conf['api_base_url'].rstrip('/')}/auth/token"
+    data = {
+        "client_id": conf["client_id"],
+        "client_secret": conf["client_secret"],
+        "grant_type": "client_credentials"
+    }
+    logger.info("获取 123pan access_token via HTTP")
+    r = _http.post(url, json=data, timeout=30)
+    r.raise_for_status()
+    resp = r.json()
+    token = resp.get("access_token") or resp.get("token")
+    if not token:
+        raise RuntimeError(f"获取 access_token 失败: {resp}")
+    return token
+
+def list_folder_http(access_token, parent_id, limit=100):
+    """列出指定 parent_id 下的文件夹／文件"""
+    conf = cfg["123pan_http"]
+    url = f"{conf['api_base_url'].rstrip('/')}/file/list"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    params = {"parentID": parent_id, "limit": limit}
+    r = _http.get(url, headers=headers, params=params, timeout=30)
+    r.raise_for_status()
+    return r.json().get("fileList") or []
+
+def mkdir_http(access_token, name, parent_id):
+    """在 parent_id 下创建子目录 name"""
+    conf = cfg["123pan_http"]
+    url = f"{conf['api_base_url'].rstrip('/')}/file/mkdir"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    body = {"name": name, "parentID": parent_id}
+    r = _http.post(url, json=body, headers=headers, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+def upload_file_http(access_token, parent_id, filepath):
+    """上传文件 filepath 到 parent_id 目录"""
+    conf = cfg["123pan_http"]
+    url = f"{conf['api_base_url'].rstrip('/')}/file/upload"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    with open(filepath, "rb") as f:
+        files = {"file": (Path(filepath).name, f)}
+        data = {"parentID": parent_id}
+        r = _http.post(url, headers=headers, data=data, files=files, timeout=3600)
+    r.raise_for_status()
+    return r.json()
+
+def async_upload(filepath):
+    part_files = sorted(glob(filepath + "*"))
+
+    def task():
+        token = None
+        for attempt in range(1, 6):
+            try:
+                token = get_access_token_http()
+                break
+            except Exception as e:
+                logger.warning("获取 access_token 失败 %d/5: %s", attempt, e)
+                time.sleep(min(30, 2**attempt))
+        if not token:
+            logger.error("无法获取 access_token，上传取消")
+            return
+
+        parent_id = cfg["123pan_http"].get("parent_folder_id", 0) or 0
+        try_parents = [parent_id]
+        if parent_id != 0:
+            try_parents.append(0)
+        used_parent = None
+        folder_list = None
+        today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+
+        for pid in try_parents:
+            try:
+                folder_list = list_folder_http(token, pid, limit=100)
+                used_parent = pid
+                break
+            except Exception as e:
+                logger.warning("列出父目录 %s 失败: %s", pid, e)
+                continue
+
+        if folder_list is None:
+            logger.error("无法列出任何父目录，上传取消")
+            return
+
+        # 查找今日目录
+        date_folder_id = None
+        for f in folder_list:
+            if (f.get("filename") == today_str or f.get("name") == today_str) and int(f.get("type", 1)) == 1:
+                date_folder_id = f.get("id") or f.get("fileId") or f.get("fid")
+                break
+
+        if not date_folder_id:
+            try:
+                logger.info("在父目录 %s 下创建日期子目录: %s", used_parent, today_str)
+                mkdir_resp = mkdir_http(token, today_str, used_parent)
+                date_folder_id = mkdir_resp.get("id") or mkdir_resp.get("fileId") or mkdir_resp.get("fid")
+                logger.info("创建返回: %s -> 目录 ID=%s", mkdir_resp, date_folder_id)
+            except Exception as e:
+                logger.error("创建子目录失败: %s", e)
+                return
+
+        # 上传各个分卷
+        for f in part_files:
+            uploaded = False
+            for attempt in range(1, 6):
+                try:
+                    logger.info("上传 %s 到 123pan (目录ID=%s) 尝试 %d/5", f, date_folder_id, attempt)
+                    upload_resp = upload_file_http(token, date_folder_id, f)
+                    logger.info("上传成功: %s", upload_resp)
+                    uploaded = True
+                    if cfg.get("backup", {}).get("storage", "both") == "cloud":
+                        try:
+                            Path(f).unlink()
+                            logger.info("删除本地备份，仅保留云端: %s", f)
+                        except Exception as e:
+                            logger.warning("本地删除失败: %s", e)
+                    break
+                except Exception as e:
+                    logger.warning("上传 %s 失败 %d/5: %s", f, attempt, e)
+                    time.sleep(min(60, 2**attempt))
+                    continue
+            if not uploaded:
+                logger.error("文件 %s 上传失败，已跳过后续重试", f)
+
+        logger.info("所有分卷上传流程结束 (部分文件可能上传失败)")
+
+    t = threading.Thread(target=task, daemon=False)
+    t.start()
+    return t
+
+# --- 压缩模块 ---
 def make_filename(prefix="mc_backup"):
     return f"{prefix}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.7z"
 
@@ -208,162 +322,7 @@ def compress_worlds():
     logger.info("世界文件夹压缩完成: %s", dest)
     return str(dest)
 
-# 上传线程（在 parent_folder_id 下创建日期子文件夹上传）
-def async_upload(filepath):
-    part_files = sorted(glob(filepath + "*"))
-
-    def _extract_id(obj):
-        """从不同 SDK 返回格式中稳健提取 id"""
-        if not obj:
-            return None
-        for key in ("id", "fileId", "fid", "data"):
-            if key == "data" and isinstance(obj.get("data"), dict):
-                # data 内可能有 id 或 fileId
-                if obj["data"].get("id"):
-                    return obj["data"]["id"]
-                if obj["data"].get("fileId"):
-                    return obj["data"]["fileId"]
-            else:
-                if obj.get(key):
-                    return obj.get(key)
-        return None
-
-    def task():
-        max_attempts = 5
-        pan = None
-        date_folder_id = None
-        today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-        configured_parent = cfg["123pan"].get("parent_folder_id", 0)
-        parent_id = configured_parent if configured_parent is not None else 0
-
-        # 第一步：初始化 pan、获取或创建日期子文件夹（带回退逻辑）
-        for attempt in range(1, max_attempts + 1):
-            try:
-                logger.info("获取 123pan access_token … (尝试 %d/%d)", attempt, max_attempts)
-                time.sleep(1)
-                token = get_access_token(cfg["123pan"]["client_id"], cfg["123pan"]["client_secret"])
-                pan = Pan123(token)
-
-                # 尝试列出 parent 目录下的文件夹（若失败则回退到根目录 0）
-                try_parents = [parent_id]
-                if parent_id != 0:
-                    try_parents.append(0)  # 回退到根目录的候选
-
-                listed = None
-                used_parent = None
-                for pid in try_parents:
-                    try:
-                        logger.info("列出父目录 %s 的内容（尝试父 id=%s）", parent_id, pid)
-                        result = pan.file.list(pid, 100)
-                        # SDK 可能返回 dict，文件列表键名可能是 fileList / results / list 等，尝试兼容
-                        folders = result.get("fileList") or result.get("results") or result.get("list") or result.get("data", {}).get("fileList") or []
-                        listed = folders
-                        used_parent = pid
-                        break
-                    except HTTPError as e:
-                        # 如果是 Not Found，说明 pid 无效或无权限，尝试下一个 pid（通常会是 0）
-                        txt = str(e)
-                        logger.warning("列出父目录 %s 失败: %s", pid, txt)
-                        continue
-                    except Exception as e:
-                        logger.exception("列出父目录 %s 时出现异常: %s", pid, e)
-                        raise
-
-                if listed is None:
-                    raise RuntimeError("无法列出任何父目录，可能 parent_folder_id 设置错误或 token 权限不足")
-
-                # 查找是否已有 name == today_str 的子目录（type==1 表示目录）
-                folder = next(
-                    (f for f in listed if (f.get("filename") == today_str or f.get("name") == today_str) and int(f.get("type", 1)) == 1),
-                    None,
-                )
-
-                if folder:
-                    date_folder_id = _extract_id(folder)
-                    logger.info("找到已有日期目录 %s (ID=%s) 在父目录 %s", today_str, date_folder_id, used_parent)
-                else:
-                    # 创建日期目录
-                    logger.info("在父目录 %s 下创建日期子目录: %s", used_parent, today_str)
-                    res = pan.file.mkdir(today_str, used_parent)
-                    date_folder_id = _extract_id(res)
-                    logger.info("创建返回: %s -> 目录 ID=%s", res if isinstance(res, dict) else str(res), date_folder_id)
-
-                if not date_folder_id:
-                    raise RuntimeError("未能获得日期目录的 ID（返回格式不匹配）")
-
-                # 成功获取到目录 ID 后跳出重试循环
-                break
-
-            except HTTPError as e:
-                logger.exception("获取/创建日期目录失败（HTTPError）: %s", e)
-                # 对于 HTTPError, 如果是 404/Not Found，尝试回退到根目录再试
-                if attempt < max_attempts:
-                    wait = min(30, 2**attempt)
-                    logger.info("等待 %d 秒后重试 …", wait)
-                    time.sleep(wait)
-                    continue
-                else:
-                    logger.error("多次通过 HTTP 请求失败，取消上传")
-                    return
-            except Exception as e:
-                logger.exception("获取/创建日期目录失败: %s", e)
-                if attempt < max_attempts:
-                    wait = min(30, 2**attempt)
-                    logger.info("等待 %d 秒后重试 …", wait)
-                    time.sleep(wait)
-                    continue
-                else:
-                    logger.error("多次失败，取消上传")
-                    return
-
-        logger.info("上传目标为目录 %s (ID=%s)", today_str, date_folder_id)
-
-        # 第二步：上传各个分卷到这个日期目录
-        for f in part_files:
-            uploaded = False
-            for attempt in range(1, max_attempts + 1):
-                try:
-                    logger.info("上传 %s 到 123pan (%s) (尝试 %d/%d)", f, today_str, attempt, max_attempts)
-                    res = pan.file.upload(date_folder_id, f)
-                    logger.info("上传成功: %s", res)
-                    uploaded = True
-
-                    # 如果配置为只保留云端，删除本地分卷
-                    if cfg.get("backup", {}).get("storage", "both") == "cloud":
-                        try:
-                            Path(f).unlink()
-                            logger.info("删除本地备份，仅保留云端: %s", f)
-                        except Exception as e:
-                            logger.warning("本地删除失败: %s", e)
-                    break
-                except HTTPError as e:
-                    logger.exception("上传失败（HTTPError）: %s", e)
-                    if attempt < max_attempts:
-                        sleep_for = min(60, 2**attempt)
-                        logger.info("等待 %d 秒后重试 …", sleep_for)
-                        time.sleep(sleep_for)
-                        continue
-                    else:
-                        logger.error("上传分卷最终失败: %s", f)
-                except Exception as e:
-                    logger.exception("上传失败: %s", e)
-                    if attempt < max_attempts:
-                        sleep_for = min(60, 2**attempt)
-                        logger.info("等待 %d 秒后重试 …", sleep_for)
-                        time.sleep(sleep_for)
-                        continue
-                    else:
-                        logger.error("上传分卷最终失败: %s", f)
-            if not uploaded:
-                logger.error("文件 %s 上传失败，已跳过后续重试", f)
-
-        logger.info("所有分卷上传流程结束 (部分文件可能上传失败)")
-
-    t = threading.Thread(target=task, daemon=False)
-    t.start()
-    return t
-
-# 主流程
+# --- 主流程 ---
 def do_backup():
     mode = cfg.get("backup", {}).get("mode", "cold")
     try:
@@ -391,7 +350,7 @@ def do_backup():
             except Exception:
                 logger.error("重启服务器失败，请人工检查")
 
-# 定时任务注册
+# --- 定时任务注册 ---
 def register_jobs():
     tz = pytz.timezone(cfg["schedule"]["timezone"])
     sched = BlockingScheduler(timezone=tz)
@@ -402,14 +361,13 @@ def register_jobs():
         logger.info("已注册每日 %s:%s 备份任务（时区 %s）", hh, mm, cfg["schedule"]["timezone"])
     return sched
 
-if __name__ == "__main__":
-    sched = register_jobs()
-    logger.info("定时器启动")
-    try:
-        sched.start()
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("调度停止")
-
-# 调试时使用
 #if __name__ == "__main__":
-#    do_backup()
+#    sched = register_jobs()
+#    logger.info("定时器启动")
+#    try:
+#        sched.start()
+#    except (KeyboardInterrupt, SystemExit):
+#        logger.info("调度停止")
+
+#debug
+do_backup()
