@@ -36,7 +36,6 @@ DEFAULT_CONFIG = {
         "world_folders": ["world", "world_nether", "world_the_end"]
     },
     "123pan_http": {
-        # 假设这是 pan123 的 HTTP API 基础 URL，如 “https://open-api.123pan.com”
         "api_base_url": "https://open-api.123pan.com",
         "client_id": "YOUR_CLIENT_ID",
         "client_secret": "YOUR_CLIENT_SECRET",
@@ -72,7 +71,7 @@ cfg = json.load(open(CONFIG_PATH, "r", encoding="utf-8"))
 # --- 日志设置 ---
 log_cfg = cfg["logging"]
 logger = logging.getLogger("mc_backup")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 handler = logging.handlers.RotatingFileHandler(
     log_cfg["log_file"],
     maxBytes=log_cfg["max_bytes"],
@@ -159,54 +158,107 @@ def mcs_command(cmd):
 
 # --- 123pan HTTP API 上传实现 ---
 def get_access_token_http():
-    """通过 HTTP 接口获取 access_token（假设接口为 api_base_url + '/auth/token'）"""
+    """正确使用 123pan 开放平台 API 获取 access_token"""
     conf = cfg["123pan_http"]
-    url = f"{conf['api_base_url'].rstrip('/')}/auth/token"
-    data = {
-        "client_id": conf["client_id"],
-        "client_secret": conf["client_secret"],
-        "grant_type": "client_credentials"
+    url = f"{conf['api_base_url'].rstrip('/')}/api/v1/access_token"
+    body = {
+        "clientID": conf["client_id"],
+        "clientSecret": conf["client_secret"]
     }
-    logger.info("获取 123pan access_token via HTTP")
-    r = _http.post(url, json=data, timeout=30)
-    r.raise_for_status()
+    headers = {
+        "Platform": "open_platform",
+        "Content-Type": "application/json"
+    }
+    logger.info("获取 123pan access_token via HTTP (v1 API) -> %s", url)
+    r = _http.post(url, headers=headers, json=body, timeout=30)
+    if r.status_code != 200:
+        raise RuntimeError(f"token 接口返回 {r.status_code}: {r.text}")
     resp = r.json()
-    token = resp.get("access_token") or resp.get("token")
+    token = resp.get("data", {}).get("accessToken")
     if not token:
-        raise RuntimeError(f"获取 access_token 失败: {resp}")
+        raise RuntimeError(f"返回中未找到 accessToken: {resp}")
     return token
 
 def list_folder_http(access_token, parent_id, limit=100):
-    """列出指定 parent_id 下的文件夹／文件"""
+    """列出指定 parent_id 下的文件夹／文件，官方 v2 API"""
     conf = cfg["123pan_http"]
-    url = f"{conf['api_base_url'].rstrip('/')}/file/list"
-    headers = {"Authorization": f"Bearer {access_token}"}
-    params = {"parentID": parent_id, "limit": limit}
+    url = f"{conf['api_base_url'].rstrip('/')}/api/v2/file/list"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Platform": "open_platform",
+        "Content-Type": "application/json"
+    }
+    params = {"parentFileId": parent_id, "limit": limit}
     r = _http.get(url, headers=headers, params=params, timeout=30)
-    r.raise_for_status()
-    return r.json().get("fileList") or []
+    if r.status_code != 200:
+        raise RuntimeError(f"列出父目录 {parent_id} 失败: {r.status_code}, {r.text}")
+    resp = r.json()
+    return resp.get("data", {}).get("fileList", [])
 
 def mkdir_http(access_token, name, parent_id):
-    """在 parent_id 下创建子目录 name"""
+    """在 parent_id 下创建子目录 name（匹配 123pan 返回字段 dirID）"""
     conf = cfg["123pan_http"]
-    url = f"{conf['api_base_url'].rstrip('/')}/file/mkdir"
-    headers = {"Authorization": f"Bearer {access_token}"}
-    body = {"name": name, "parentID": parent_id}
-    r = _http.post(url, json=body, headers=headers, timeout=30)
-    r.raise_for_status()
-    return r.json()
+    url = f"{conf['api_base_url'].rstrip('/')}/upload/v2/file/mkdir"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Platform": "open_platform",
+        "Content-Type": "application/json"
+    }
+    body = {
+        "name": name,
+        "parentID": parent_id
+    }
+    r = _http.post(url, headers=headers, json=body, timeout=30)
+    if r.status_code != 200:
+        raise RuntimeError(f"创建子目录失败: {r.status_code}, {r.text}")
+    resp = r.json()
+    logger.debug("mkdir 返回内容: %s", resp)
+    data = resp.get("data")
+    if not data:
+        raise RuntimeError(f"mkdir 接口返回无 data 字段或为空: {resp}")
+    # 优先取 dirID
+    new_id = data.get("dirID") or data.get("fileId") or data.get("id") or data.get("fid")
+    if not new_id:
+        raise RuntimeError(f"mkdir 接口返回 data 内无 dirID/fileId/id/fid: {resp}")
+    return new_id
 
 def upload_file_http(access_token, parent_id, filepath):
-    """上传文件 filepath 到 parent_id 目录"""
     conf = cfg["123pan_http"]
-    url = f"{conf['api_base_url'].rstrip('/')}/file/upload"
-    headers = {"Authorization": f"Bearer {access_token}"}
+    base = conf['api_base_url'].rstrip('/')
+    headers_common = {
+        "Authorization": f"Bearer {access_token}",
+        "Platform": "open_platform",
+        "Content-Type": "application/json"
+    }
+    create_url = f"{base}/upload/v2/file/create"
+    body = {
+        "parentID": parent_id,
+        "name": Path(filepath).name,
+        "size": Path(filepath).stat().st_size
+    }
+    r1 = _http.post(create_url, headers=headers_common, json=body, timeout=30)
+    if r1.status_code != 200:
+        raise RuntimeError(f"上传任务创建失败: {r1.status_code}, {r1.text}")
+    resp1 = r1.json()
+    logger.debug("upload create 返回: %s", resp1)
+    jobId = resp1.get("data", {}).get("uploadJobId")
+    uploadUrl = resp1.get("data", {}).get("uploadUrl")
+    if not jobId or not uploadUrl:
+        raise RuntimeError(f"上传任务创建返回不完整: {resp1}")
     with open(filepath, "rb") as f:
-        files = {"file": (Path(filepath).name, f)}
-        data = {"parentID": parent_id}
-        r = _http.post(url, headers=headers, data=data, files=files, timeout=3600)
-    r.raise_for_status()
-    return r.json()
+        r2 = _http.put(uploadUrl, headers={"Authorization": f"Bearer {access_token}"}, data=f, timeout=3600)
+    if r2.status_code not in (200,201):
+        raise RuntimeError(f"文件上传失败: {r2.status_code}, {r2.text}")
+    finish_url = f"{base}/upload/v2/file/finish"
+    body2 = {
+        "uploadJobId": jobId
+    }
+    r3 = _http.post(finish_url, headers=headers_common, json=body2, timeout=30)
+    if r3.status_code != 200:
+        raise RuntimeError(f"上传完成通知失败: {r3.status_code}, {r3.text}")
+    resp3 = r3.json()
+    logger.debug("upload finish 返回: %s", resp3)
+    return resp3
 
 def async_upload(filepath):
     part_files = sorted(glob(filepath + "*"))
