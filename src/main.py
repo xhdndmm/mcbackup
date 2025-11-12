@@ -18,6 +18,8 @@ from urllib3.util.retry import Retry
 import pytz
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
+import hashlib
+import math
 
 # --- 配置部分 ---
 CONFIG_PATH = Path(__file__).parent / "config.json"
@@ -195,10 +197,10 @@ def list_folder_http(access_token, parent_id, limit=100):
     resp = r.json()
     return resp.get("data", {}).get("fileList", [])
 
-def mkdir_http(access_token, name, parent_id):
-    """在 parent_id 下创建子目录 name（匹配 123pan 返回字段 dirID）"""
+def mkdir_http(access_token: str, name: str, parent_id: int) -> int:
     conf = cfg["123pan_http"]
-    url = f"{conf['api_base_url'].rstrip('/')}/upload/v2/file/mkdir"
+    base = conf["api_base_url"].rstrip("/")
+    url = f"{base}/upload/v1/file/mkdir"
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Platform": "open_platform",
@@ -208,52 +210,150 @@ def mkdir_http(access_token, name, parent_id):
         "name": name,
         "parentID": parent_id
     }
+    logger.info("创建子目录: 名称=%s, 父目录ID=%s", name, parent_id)
     r = _http.post(url, headers=headers, json=body, timeout=30)
     if r.status_code != 200:
         raise RuntimeError(f"创建子目录失败: {r.status_code}, {r.text}")
     resp = r.json()
     logger.debug("mkdir 返回内容: %s", resp)
     data = resp.get("data")
-    if not data:
+    if data is None:
         raise RuntimeError(f"mkdir 接口返回无 data 字段或为空: {resp}")
-    # 优先取 dirID
-    new_id = data.get("dirID") or data.get("fileId") or data.get("id") or data.get("fid")
-    if not new_id:
-        raise RuntimeError(f"mkdir 接口返回 data 内无 dirID/fileId/id/fid: {resp}")
-    return new_id
+    # 如果 data 是 dict 并含有 dirID
+    if isinstance(data, dict):
+        dir_id = data.get("dirID")
+        if dir_id is None:
+            raise RuntimeError(f"mkdir 接口返回 data 内无 dirID: {resp}")
+        try:
+            return int(dir_id)
+        except ValueError:
+            raise RuntimeError(f"mkdir 返回的 dirID 不能解析为 int: {dir_id}")
+    # 若接口直接返回 int（少见，但你可能遇到）
+    if isinstance(data, int):
+        return data
+    # 如果到这里，类型不符合预期
+    raise RuntimeError(f"mkdir 接口返回 unexpected data type: {resp}")
 
-def upload_file_http(access_token, parent_id, filepath):
+
+def get_or_create_date_folder(access_token: str, parent_id: int, date_str: str) -> int:
+    """
+    在 parent_id 下查找子目录名为 date_str 的目录；如果找到返回其 ID；
+    否则创建一个新的目录并返回其 ID。
+    """
+    # 先列出父目录
+    try:
+        folder_list = list_folder_http(access_token, parent_id, limit=100)
+    except Exception as e:
+        logger.warning("列出父目录 %s 失败: %s", parent_id, e)
+        folder_list = None
+
+    if folder_list:
+        logger.debug("父目录 %s 的子目录列表: %s", parent_id, folder_list)
+        for f in folder_list:
+            if not isinstance(f, dict):
+                logger.warning("跳过 list_folder 返回的非 dict 项: %r", f)
+                continue
+            name = f.get("filename") or f.get("name")
+            ftype = f.get("type")
+            try:
+                ftype = int(ftype)
+            except Exception:
+                ftype = None
+            # 如果是目录 (假设 type==1 表示文件夹)
+            if name == date_str and ftype == 1:
+                found_id = f.get("id") or f.get("fileId") or f.get("fid")
+                if found_id is not None:
+                    try:
+                        return int(found_id)
+                    except Exception:
+                        logger.warning("找到子目录但其 ID 不能转换为 int: %s", found_id)
+    # 如果没找到，则创建
+    try:
+        new_folder_id = mkdir_http(access_token, date_str, parent_id)
+        logger.info("创建返回: 目录 ID=%s", new_folder_id)
+        return new_folder_id
+    except Exception as e:
+        logger.error("创建子目录失败: %s", e)
+        raise
+
+def compute_etag_md5(filepath: Path) -> str:
+    """计算文件的 MD5 值作为 etag（如果接口支持这种方式）"""
+    h = hashlib.md5()
+    with filepath.open("rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def upload_file_http(access_token: str, parent_id: int, filepath: str):
     conf = cfg["123pan_http"]
     base = conf['api_base_url'].rstrip('/')
-    headers_common = {
+    # 创建上传任务接口
+    create_url = f"{base}/upload/v2/file/create"
+    headers = {
         "Authorization": f"Bearer {access_token}",
         "Platform": "open_platform",
         "Content-Type": "application/json"
     }
-    create_url = f"{base}/upload/v2/file/create"
+    file_path = Path(filepath)
+    size = file_path.stat().st_size
     body = {
-        "parentID": parent_id,
-        "name": Path(filepath).name,
-        "size": Path(filepath).stat().st_size
+        "parentFileID": parent_id,
+        "filename": file_path.name,
+        "size": size,
+        "etag": compute_etag_md5(file_path)
     }
-    r1 = _http.post(create_url, headers=headers_common, json=body, timeout=30)
+    r1 = _http.post(create_url, headers=headers, json=body, timeout=30)
     if r1.status_code != 200:
         raise RuntimeError(f"上传任务创建失败: {r1.status_code}, {r1.text}")
     resp1 = r1.json()
     logger.debug("upload create 返回: %s", resp1)
-    jobId = resp1.get("data", {}).get("uploadJobId")
-    uploadUrl = resp1.get("data", {}).get("uploadUrl")
-    if not jobId or not uploadUrl:
+    data1 = resp1.get("data", {})
+    preuploadID = data1.get("preuploadID")
+    reuse = data1.get("reuse", False)
+    sliceSize = data1.get("sliceSize")
+    servers = data1.get("servers")  # 列表
+    if not preuploadID or not servers or len(servers) == 0:
         raise RuntimeError(f"上传任务创建返回不完整: {resp1}")
-    with open(filepath, "rb") as f:
-        r2 = _http.put(uploadUrl, headers={"Authorization": f"Bearer {access_token}"}, data=f, timeout=3600)
-    if r2.status_code not in (200,201):
-        raise RuntimeError(f"文件上传失败: {r2.status_code}, {r2.text}")
-    finish_url = f"{base}/upload/v2/file/finish"
-    body2 = {
-        "uploadJobId": jobId
-    }
-    r3 = _http.post(finish_url, headers=headers_common, json=body2, timeout=30)
+    # 如果 reuse==True 表示秒传成功
+    if reuse:
+        file_id = data1.get("fileID")
+        logger.info("文件 %s 秒传成功，fileID=%s", filepath, file_id)
+        return resp1
+    
+    # 分片上传
+    upload_server = servers[0].rstrip('/')  # 取第一个服务器
+    slice_url = f"{upload_server}/upload/v2/file/slice"
+    logger.info("开始分片上传: %s, sliceSize=%s, server=%s", filepath, sliceSize, upload_server)
+
+    with file_path.open("rb") as f:
+        total_slices = math.ceil(size / sliceSize)
+        for idx in range(total_slices):
+            slice_no = idx + 1
+            chunk = f.read(sliceSize)
+            md5 = hashlib.md5(chunk).hexdigest()
+            files = {
+                "slice": (file_path.name, chunk),
+            }
+            data = {
+                "preuploadID": preuploadID,
+                "sliceNo": str(slice_no),
+                "sliceMD5": md5
+            }
+            logger.debug("上传分片 %d/%d md5=%s", slice_no, total_slices, md5)
+            r2 = _http.post(slice_url, headers={
+                "Authorization": f"Bearer {access_token}",
+                "Platform": "open_platform"
+            }, data=data, files=files, timeout=3600)
+            if r2.status_code not in (200, 201):
+                raise RuntimeError(f"上传分片失败: sliceNo={slice_no}, {r2.status_code}, {r2.text}")
+            resp2 = r2.json()
+            logger.debug("slice 返回: %s", resp2)
+            # 如果接口回 “completed”:true 的字段，也可提前结束
+
+    # 上传完毕通知接口
+    complete_url = f"{base}/upload/v2/file/upload_complete"
+    body2 = {"preuploadID": preuploadID}
+    r3 = _http.post(complete_url, headers=headers, json=body2, timeout=30)
     if r3.status_code != 200:
         raise RuntimeError(f"上传完成通知失败: {r3.status_code}, {r3.text}")
     resp3 = r3.json()
