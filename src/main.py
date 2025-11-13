@@ -1,5 +1,5 @@
-# main.py
-# v1.6
+# src/main.py
+# v2.0
 
 import sys
 import time
@@ -513,13 +513,15 @@ def register_jobs():
         logger.info("已注册每日 %s:%s 备份任务（时区 %s）", hh, mm, cfg["schedule"]["timezone"])
     return sched
 
-#if __name__ == "__main__":
-#    sched = register_jobs()
-#    logger.info("定时器启动")
-#    try:
-#        sched.start()
-#    except (KeyboardInterrupt, SystemExit):
-#        logger.info("调度停止")
-
-#debug
-do_backup()
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "run_once":
+        # 仅执行一次备份
+        do_backup()
+    else:
+        # 默认启用定时器
+        sched = register_jobs()
+        logger.info("定时器启动")
+        try:
+            sched.start()
+        except (KeyboardInterrupt, SystemExit):
+            logger.info("调度停止")

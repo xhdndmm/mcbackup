@@ -1,11 +1,22 @@
 {
-    "configurations": [
-        {
-            "name": "Python 调试程序: 当前文件",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "src/main.py",
-            "console": "integratedTerminal"
-        }
-    ]
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "调试（不含定时启动）",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/main.py",
+      "args": ["run_once"],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "调试",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
 }
