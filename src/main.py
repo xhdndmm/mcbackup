@@ -74,7 +74,7 @@ cfg = json.load(open(CONFIG_PATH, "r", encoding="utf-8"))
 log_cfg = cfg["logging"]
 logger = logging.getLogger("mc_backup")
 logger.setLevel(logging.DEBUG)
-handler = logging.handlers.RotatingFileHandler(
+handler = RotatingFileHandler(
     log_cfg["log_file"],
     maxBytes=log_cfg["max_bytes"],
     backupCount=log_cfg["backup_count"],
@@ -285,6 +285,10 @@ def compute_etag_md5(filepath: Path) -> str:
     return h.hexdigest()
 
 def upload_file_http(access_token: str, parent_id: int, filepath: str):
+    """
+    创建上传任务并上传文件（支持秒传与分片上传）
+    已兼容：data 为 None、reuse==True（秒传）、preuploadID 为空等情况
+    """
     conf = cfg["123pan_http"]
     base = conf['api_base_url'].rstrip('/')
     # 创建上传任务接口
@@ -307,19 +311,25 @@ def upload_file_http(access_token: str, parent_id: int, filepath: str):
         raise RuntimeError(f"上传任务创建失败: {r1.status_code}, {r1.text}")
     resp1 = r1.json()
     logger.debug("upload create 返回: %s", resp1)
-    data1 = resp1.get("data", {})
-    preuploadID = data1.get("preuploadID")
+
+    # 兼容 data 可能为 None
+    data1 = resp1.get("data") or {}
+
+    # 如果服务器表示 reuse==True（秒传），直接作为成功处理
     reuse = data1.get("reuse", False)
-    sliceSize = data1.get("sliceSize")
-    servers = data1.get("servers")  # 列表
-    if not preuploadID or not servers or len(servers) == 0:
-        raise RuntimeError(f"上传任务创建返回不完整: {resp1}")
-    # 如果 reuse==True 表示秒传成功
     if reuse:
         file_id = data1.get("fileID")
         logger.info("文件 %s 秒传成功，fileID=%s", filepath, file_id)
         return resp1
-    
+
+    preuploadID = data1.get("preuploadID")
+    sliceSize = data1.get("sliceSize")
+    servers = data1.get("servers") or []
+
+    # 非秒传情形下必须有 preuploadID 和 upload server 和 sliceSize
+    if not preuploadID or not servers or len(servers) == 0 or not sliceSize:
+        raise RuntimeError(f"上传任务创建返回不完整: {resp1}")
+
     # 分片上传
     upload_server = servers[0].rstrip('/')  # 取第一个服务器
     slice_url = f"{upload_server}/upload/v2/file/slice"
@@ -349,6 +359,9 @@ def upload_file_http(access_token: str, parent_id: int, filepath: str):
             resp2 = r2.json()
             logger.debug("slice 返回: %s", resp2)
             # 如果接口回 “completed”:true 的字段，也可提前结束
+            if isinstance(resp2, dict) and resp2.get("data", {}).get("completed"):
+                logger.info("服务器指示已完成全部切片上传，提前结束分片循环")
+                break
 
     # 上传完毕通知接口
     complete_url = f"{base}/upload/v2/file/upload_complete"
@@ -393,26 +406,17 @@ def async_upload(filepath):
                 logger.warning("列出父目录 %s 失败: %s", pid, e)
                 continue
 
-        if folder_list is None:
+        if used_parent is None:
             logger.error("无法列出任何父目录，上传取消")
             return
 
-        # 查找今日目录
-        date_folder_id = None
-        for f in folder_list:
-            if (f.get("filename") == today_str or f.get("name") == today_str) and int(f.get("type", 1)) == 1:
-                date_folder_id = f.get("id") or f.get("fileId") or f.get("fid")
-                break
-
-        if not date_folder_id:
-            try:
-                logger.info("在父目录 %s 下创建日期子目录: %s", used_parent, today_str)
-                mkdir_resp = mkdir_http(token, today_str, used_parent)
-                date_folder_id = mkdir_resp.get("id") or mkdir_resp.get("fileId") or mkdir_resp.get("fid")
-                logger.info("创建返回: %s -> 目录 ID=%s", mkdir_resp, date_folder_id)
-            except Exception as e:
-                logger.error("创建子目录失败: %s", e)
-                return
+        # 使用封装好的函数来获取或创建日期子目录（它会返回 int ID 或 raise）
+        try:
+            date_folder_id = get_or_create_date_folder(token, used_parent, today_str)
+            date_folder_id = int(date_folder_id)
+        except Exception as e:
+            logger.error("获取/创建日期目录失败: %s", e)
+            return
 
         # 上传各个分卷
         for f in part_files:
