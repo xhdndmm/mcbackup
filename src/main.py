@@ -73,7 +73,7 @@ cfg = json.load(open(CONFIG_PATH, "r", encoding="utf-8"))
 # --- 日志设置 ---
 log_cfg = cfg["logging"]
 logger = logging.getLogger("mc_backup")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 handler = RotatingFileHandler(
     log_cfg["log_file"],
     maxBytes=log_cfg["max_bytes"],
