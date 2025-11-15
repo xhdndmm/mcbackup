@@ -9,7 +9,7 @@
   - **热备份 (hot)**：save-off → save-all → 压缩世界文件夹 → save-on（无需停服）
 - 使用 `7z` 压缩服务器目录
 - 压缩完成后立即恢复正常运行，**上传任务在后台线程执行**
-- 上传至 **123 云盘**（使用官方开放平台 API / `pan123` SDK）
+- 上传至 **123 云盘**（使用官方开放平台 API）
 - 支持多时段 **定时任务**
 - 支持 **日志文件轮转**，便于长期运行
 
@@ -50,7 +50,8 @@ pip install -r requirements.txt
     "compress_cmd": "7z",                     // 压缩命令
     "compress_args": ["a", "-mx=9"]           // 压缩参数
   },
-  "123pan": {
+  "123pan_http": {
+    "api_base_url": "https://open-api.123pan.com", // 123云盘API地址（正常情况不要动）
     "client_id": "YOUR_123PAN_CLIENT_ID",     // 123 云盘API Client ID
     "client_secret": "YOUR_123PAN_CLIENT_SECRET", // 123 云盘API Client Secret
     "parent_folder_id": 0                     // 云盘目录 ID（0 为根目录）
@@ -72,6 +73,7 @@ pip install -r requirements.txt
   }
 }
 ```
+**注意，2.X版本配置文件有变动，上述为2.X版本配置文件示例**
 
 ---
 
@@ -186,3 +188,18 @@ sudo systemctl start mcbackup
 * 大文件上传时，服务器已提前恢复运行，不影响玩家体验
 * 若上传失败，压缩包仍会保存在本地 `backup_dir`
 * **建议定期检查日志文件，确认上传是否成功**
+
+---
+
+## 开发要求
+如果你想为本项目添砖加瓦，做一些贡献，那么建议使用[vscode](https://code.visualstudio.com/)作为编辑器，提交PR时，请向dev分支提交。
+
+---
+
+## 问题反馈
+程序不可避免会有些BUG，你可以在[这里](https://github.com/xhdndmm/mcbackup/issues)提交。
+
+---
+
+## 使用协议
+本程序使用[GPLv3](https://www.gnu.org/licenses/gpl-3.0.html)许可证
