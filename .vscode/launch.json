@@ -11,7 +11,7 @@
       "justMyCode": false
     },
     {
-      "name": "调试",
+      "name": "完整调试",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/src/main.py",
