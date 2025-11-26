@@ -1,5 +1,5 @@
 # src/main.py
-# v2.0
+# v2.1
 
 import sys
 import time
@@ -34,7 +34,7 @@ DEFAULT_CONFIG = {
         "server_dir": "/home/mc/server",
         "backup_dir": "/home/mc/backups",
         "compress_cmd": "7z",
-        "compress_args": ["a", "-mx=9", "-mmt=on"],
+        "compress_args": ["a", "-mx=6", "-mmt=on"],
         "world_folders": ["world", "world_nether", "world_the_end"]
     },
     "123pan_http": {
@@ -73,7 +73,6 @@ cfg = json.load(open(CONFIG_PATH, "r", encoding="utf-8"))
 # --- 日志设置 ---
 log_cfg = cfg["logging"]
 logger = logging.getLogger("mc_backup")
-logger.setLevel(logging.INFO)
 handler = RotatingFileHandler(
     log_cfg["log_file"],
     maxBytes=log_cfg["max_bytes"],
@@ -287,35 +286,35 @@ def compute_etag_md5(filepath: Path) -> str:
 def upload_file_http(access_token: str, parent_id: int, filepath: str):
     """
     创建上传任务并上传文件（支持秒传与分片上传）
-    已兼容：data 为 None、reuse==True（秒传）、preuploadID 为空等情况
+    改进版：兼容 data 为 None 的情况，不每次重试都重建任务。
     """
     conf = cfg["123pan_http"]
     base = conf['api_base_url'].rstrip('/')
-    # 创建上传任务接口
+    file_path = Path(filepath)
+    size = file_path.stat().st_size
+    etag = compute_etag_md5(file_path)
+
+    # 1. 建立任务
     create_url = f"{base}/upload/v2/file/create"
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Platform": "open_platform",
         "Content-Type": "application/json"
     }
-    file_path = Path(filepath)
-    size = file_path.stat().st_size
     body = {
         "parentFileID": parent_id,
         "filename": file_path.name,
         "size": size,
-        "etag": compute_etag_md5(file_path)
+        "etag": etag
     }
+    logger.info("上传任务创建: %s (文件=%s, 大小=%d)", create_url, filepath, size)
     r1 = _http.post(create_url, headers=headers, json=body, timeout=30)
     if r1.status_code != 200:
         raise RuntimeError(f"上传任务创建失败: {r1.status_code}, {r1.text}")
     resp1 = r1.json()
     logger.debug("upload create 返回: %s", resp1)
 
-    # 兼容 data 可能为 None
     data1 = resp1.get("data") or {}
-
-    # 如果服务器表示 reuse==True（秒传），直接作为成功处理
     reuse = data1.get("reuse", False)
     if reuse:
         file_id = data1.get("fileID")
@@ -325,52 +324,63 @@ def upload_file_http(access_token: str, parent_id: int, filepath: str):
     preuploadID = data1.get("preuploadID")
     sliceSize = data1.get("sliceSize")
     servers = data1.get("servers") or []
+    if not preuploadID or not servers or sliceSize is None:
+        raise RuntimeError(f"上传任务创建响应不完整: {resp1}")
 
-    # 非秒传情形下必须有 preuploadID 和 upload server 和 sliceSize
-    if not preuploadID or not servers or len(servers) == 0 or not sliceSize:
-        raise RuntimeError(f"上传任务创建返回不完整: {resp1}")
-
-    # 分片上传
-    upload_server = servers[0].rstrip('/')  # 取第一个服务器
+    upload_server = servers[0].rstrip('/')
     slice_url = f"{upload_server}/upload/v2/file/slice"
     logger.info("开始分片上传: %s, sliceSize=%s, server=%s", filepath, sliceSize, upload_server)
 
+    total_slices = math.ceil(size / sliceSize)
+    logger.info("预计分片数: %d", total_slices)
+
+    # 2. 分片上传循环
     with file_path.open("rb") as f:
-        total_slices = math.ceil(size / sliceSize)
         for idx in range(total_slices):
             slice_no = idx + 1
             chunk = f.read(sliceSize)
             md5 = hashlib.md5(chunk).hexdigest()
-            files = {
-                "slice": (file_path.name, chunk),
-            }
+            files = {"slice": (file_path.name, chunk)}
             data = {
                 "preuploadID": preuploadID,
                 "sliceNo": str(slice_no),
                 "sliceMD5": md5
             }
+
             logger.debug("上传分片 %d/%d md5=%s", slice_no, total_slices, md5)
             r2 = _http.post(slice_url, headers={
                 "Authorization": f"Bearer {access_token}",
                 "Platform": "open_platform"
             }, data=data, files=files, timeout=3600)
             if r2.status_code not in (200, 201):
-                raise RuntimeError(f"上传分片失败: sliceNo={slice_no}, {r2.status_code}, {r2.text}")
-            resp2 = r2.json()
+                raise RuntimeError(f"分片上传失败: sliceNo={slice_no}, {r2.status_code}, {r2.text}")
+            try:
+                resp2 = r2.json()
+            except ValueError:
+                logger.error("分片上传返回不能解析为 JSON: %s", r2.text)
+                raise RuntimeError("分片上传返回非 JSON")
+
             logger.debug("slice 返回: %s", resp2)
-            # 如果接口回 “completed”:true 的字段，也可提前结束
-            if isinstance(resp2, dict) and resp2.get("data", {}).get("completed"):
+            # 兼容 data 为 None 的情况
+            data2 = resp2.get("data")
+            if isinstance(data2, dict) and data2.get("completed"):
                 logger.info("服务器指示已完成全部切片上传，提前结束分片循环")
                 break
+            # 否则，继续上传下一片
 
-    # 上传完毕通知接口
+    # 3. 上传完成通知
     complete_url = f"{base}/upload/v2/file/upload_complete"
     body2 = {"preuploadID": preuploadID}
+    logger.info("通知上传完成: %s", complete_url)
     r3 = _http.post(complete_url, headers=headers, json=body2, timeout=30)
     if r3.status_code != 200:
         raise RuntimeError(f"上传完成通知失败: {r3.status_code}, {r3.text}")
     resp3 = r3.json()
     logger.debug("upload finish 返回: %s", resp3)
+    if resp3.get("code") != 0 or resp3.get("data") is None:
+        raise RuntimeError(f"上传完成通知响应异常: {resp3}")
+    file_id = resp3["data"].get("fileID")
+    logger.info("文件上传完毕，fileID=%s", file_id)
     return resp3
 
 def async_upload(filepath):
@@ -456,7 +466,7 @@ def compress_full():
     out.mkdir(parents=True, exist_ok=True)
     fname = make_filename("mc_full_backup")
     dest = out / fname
-    cmd = [cfg["server"]["compress_cmd"]] + cfg["server"]["compress_args"] + ["-v9g", str(dest), cfg["server"]["server_dir"]]
+    cmd = [cfg["server"]["compress_cmd"]] + cfg["server"]["compress_args"] + ["-v8g", str(dest), cfg["server"]["server_dir"]]
     logger.info("执行冷备份压缩: %s", " ".join(cmd))
     subprocess.check_call(cmd)
     logger.info("压缩完成: %s", dest)
@@ -472,7 +482,7 @@ def compress_worlds():
     inputs = [str(server_dir / w) for w in world_folders if (server_dir / w).exists()]
     if not inputs:
         raise FileNotFoundError("未找到世界文件夹，请检查 config.json 中的设置")
-    cmd = [cfg["server"]["compress_cmd"]] + cfg["server"]["compress_args"] + ["-v9g", str(dest)] + inputs
+    cmd = [cfg["server"]["compress_cmd"]] + cfg["server"]["compress_args"] + ["-v8g", str(dest)] + inputs
     logger.info("执行热备份压缩: %s", " ".join(cmd))
     subprocess.check_call(cmd)
     logger.info("世界文件夹压缩完成: %s", dest)
@@ -519,10 +529,12 @@ def register_jobs():
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "run_once":
-        # 仅执行一次备份
+        # 调试
+        logger.setLevel(logging.DEBUG)
         do_backup()
     else:
-        # 默认启用定时器
+        # 正常运行
+        logger.setLevel(logging.INFO)
         sched = register_jobs()
         logger.info("定时器启动")
         try:
