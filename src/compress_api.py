@@ -1,5 +1,8 @@
 import subprocess
 import datetime
+from pathlib import Path
+from log_api import logger
+from config import cfg
 
 # --- 压缩模块 ---
 def make_filename(prefix="mc_backup"):
