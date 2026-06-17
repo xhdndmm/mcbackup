@@ -19,6 +19,7 @@
 
 - 操作系统：Linux
 - Python（版本：`>=3.8`）
+- UV
 - [MCSManager 面板](https://mcsmanager.com/)
 - 系统依赖：
 ```bash
@@ -27,7 +28,7 @@ sudo apt update && sudo apt install p7zip-full
 
 - Python 依赖：
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
 
 ---

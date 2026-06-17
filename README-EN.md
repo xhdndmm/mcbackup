@@ -20,6 +20,7 @@ Features:
 
 - Operating System: Linux  
 - Python version: `>= 3.8`  
+- UV
 - [MCSManager Panel](https://mcsmanager.com/)  
 - System dependencies:
 ```bash
@@ -29,7 +30,7 @@ sudo apt update && sudo apt install p7zip-full
 - Python dependencies:
 
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
 
 ---
