@@ -1,0 +1,15 @@
+[project]
+name = "mcbackup"
+version = "2.1.1"
+description = "一个自动备份MC服务器至123云盘的程序"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "requests",
+    "schedule",
+    "apscheduler",
+    "pytz",
+]
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
