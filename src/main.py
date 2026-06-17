@@ -61,7 +61,7 @@ if __name__ == "__main__":
         # 正常运行
         logger.setLevel(logging.INFO)
         sched = register_jobs()
-        logger.info("mcbackup version",VERSION)
+        print("mcbackup version",VERSION)
         logger.info("定时器启动")
         try:
             sched.start()
