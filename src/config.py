@@ -3,6 +3,8 @@ from pathlib import Path
 import sys
 
 # --- 配置部分 ---
+VERSION = "2.1.1"
+
 CONFIG_PATH = Path(__file__).parent / "config.json"
 DEFAULT_CONFIG = {
     "mcsmanager": {

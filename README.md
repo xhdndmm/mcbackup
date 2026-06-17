@@ -1,4 +1,16 @@
+[EN](./README-EN.md) | [ZH](./README.md)
+
 # 欢迎浏览本项目！
+
+<div>
+  <a href="https://github.com/xhdndmm/mcbackup/stargazers"><img src="https://img.shields.io/github/stars/xhdndmm/mcbackup" alt="Stars"></a>
+  <a href="https://github.com/xhdndmm/mcbackup/issues"><img src="https://img.shields.io/github/issues/xhdndmm/mcbackup"></a>
+  <a href="https://github.com/xhdndmm/mcbackup/blob/main/LICENSE"><img src="https://img.shields.io/badge/GPL%20v3-green" alt="License"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.8%2B-blue" alt="Python Version"></a>
+  <a href="https://github.com/xhdndmm/mcbackup/releases"><img src="https://img.shields.io/github/v/tag/xhdndmm/mcbackup?label=release" alt="latest_release"></a>
+  <a href="https://github.com/xhdndmm/mcbackup/releases"><img src="https://img.shields.io/github/downloads/xhdndmm/mcbackup/total" alt="Downloads"></a>
+</div>
+
 ## 这是什么？
 一个基于 **Python + MCSManager API + 123 云盘 API** 的Minecraft服务器自动化备份工具。  
 
@@ -83,7 +95,7 @@ uv sync
 1. **第一次运行**
 
    ```bash
-   python3 backup.py
+   python3 src/main.py
    ```
 
    程序会生成 `config.json` 并提示修改。
@@ -164,8 +176,8 @@ Description=Minecraft Backup Service
 After=network.target
 
 [Service]
-WorkingDirectory=/path/to/backup
-ExecStart=/path/to/python3 /path/to/backup/backup.py
+WorkingDirectory=/path/to/src
+ExecStart=/path/to/python3 /path/to/src/main.py
 Restart=always
 User=mc
 
@@ -193,7 +205,7 @@ sudo systemctl start mcbackup
 ---
 
 ## 开发要求
-如果你想为本项目添砖加瓦，做一些贡献，那么建议使用[vscode](https://code.visualstudio.com/)作为编辑器，提交PR时，请向dev分支提交。
+如果你想为本项目添砖加瓦，做一些贡献，我们非常欢迎。提交PR时，请向dev分支提交。
 
 ---
 

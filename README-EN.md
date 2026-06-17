@@ -1,4 +1,15 @@
+[EN](./README-EN.md) | [ZH](./README.md)
+
 # Welcome to this Project!
+
+<div>
+  <a href="https://github.com/xhdndmm/mcbackup/stargazers"><img src="https://img.shields.io/github/stars/xhdndmm/mcbackup" alt="Stars"></a>
+  <a href="https://github.com/xhdndmm/mcbackup/issues"><img src="https://img.shields.io/github/issues/xhdndmm/mcbackup"></a>
+  <a href="https://github.com/xhdndmm/mcbackup/blob/main/LICENSE"><img src="https://img.shields.io/badge/GPL%20v3-green" alt="License"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.8%2B-blue" alt="Python Version"></a>
+  <a href="https://github.com/xhdndmm/mcbackup/releases"><img src="https://img.shields.io/github/v/tag/xhdndmm/mcbackup?label=release" alt="latest_release"></a>
+  <a href="https://github.com/xhdndmm/mcbackup/releases"><img src="https://img.shields.io/github/downloads/xhdndmm/mcbackup/total" alt="Downloads"></a>
+</div>
 
 ## What is this?
 A Minecraft server automated backup tool based on **Python + MCSManager API + 123Pan Cloud Drive API**.
@@ -170,8 +181,8 @@ Description=Minecraft Backup Service
 After=network.target
 
 [Service]
-WorkingDirectory=/path/to/backup
-ExecStart=/path/to/python3 /path/to/backup/backup.py
+WorkingDirectory=/path/to/src
+ExecStart=/path/to/python3 /path/to/src/main.py
 Restart=always
 User=mc
 
@@ -200,8 +211,7 @@ sudo systemctl start mcbackup
 
 ## Contributing
 
-If you'd like to contribute, it's recommended to use [VS Code](https://code.visualstudio.com/).
-Please submit PRs to the **dev** branch.
+If you'd like to contribute, please submit PRs to the **dev** branch.
 
 ---
 
