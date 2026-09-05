@@ -197,15 +197,10 @@ sudo systemctl start mcbackup
 
 ## 注意意事项
 
-* 上传部分使用 `pan123` SDK，内部会调用 123 云盘官方 API 进行分片上传
+* 上传部分使用 `pan123` API，内部会调用 123 云盘官方 API 进行分片上传
 * 大文件上传时，服务器已提前恢复运行，不影响玩家体验
 * 若上传失败，压缩包仍会保存在本地 `backup_dir`
 * **建议定期检查日志文件，确认上传是否成功**
-
----
-
-## 开发要求
-如果你想为本项目添砖加瓦，做一些贡献，我们非常欢迎。提交PR时，请向dev分支提交。
 
 ---
 
@@ -215,4 +210,4 @@ sudo systemctl start mcbackup
 ---
 
 ## 使用协议
-本程序使用[GPLv3](https://www.gnu.org/licenses/gpl-3.0.html)许可证
+本程序使用[MIT](./LICENSE)许可证

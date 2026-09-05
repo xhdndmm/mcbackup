@@ -1,3 +1,5 @@
+# Copyright (c) 2026 喜欢电脑的猫咪
+
 import subprocess
 import datetime
 from pathlib import Path

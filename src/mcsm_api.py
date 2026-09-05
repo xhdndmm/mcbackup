@@ -1,3 +1,5 @@
+# # Copyright (c) 2026 喜欢电脑的猫咪
+
 from log_api import logger
 from config import cfg
 from tls_adapter import _http

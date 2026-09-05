@@ -1,3 +1,5 @@
+# Copyright (c) 2026 喜欢电脑的猫咪
+
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry

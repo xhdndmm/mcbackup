@@ -202,16 +202,10 @@ sudo systemctl start mcbackup
 
 ## Notes
 
-* The uploading process uses the `pan123` SDK, which calls the 123Pan official API for multipart uploads
+* The uploading process uses the `pan123` API, which calls the 123Pan official API for multipart uploads
 * For large files, the server will already be back online while uploading
 * If upload fails, the compressed backup still remains in `backup_dir`
 * **Check log files periodically to confirm upload success**
-
----
-
-## Contributing
-
-If you'd like to contribute, please submit PRs to the **dev** branch.
 
 ---
 
@@ -224,8 +218,7 @@ Report issues here:
 
 ## License
 
-This project is licensed under the **GPLv3** license:
-[https://www.gnu.org/licenses/gpl-3.0.html](https://www.gnu.org/licenses/gpl-3.0.html)
+This project is licensed under the [MIT](./LICENSE) license:
 
 ---
 Translated by ChatGPT

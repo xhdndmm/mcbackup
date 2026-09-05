@@ -1,3 +1,7 @@
+#!/usr/bin/env python3
+
+# Copyright (c) 2026 喜欢电脑的猫咪
+
 import sys
 import time
 import logging

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 喜欢电脑的猫咪
+
 from config import cfg
 import logging
 from logging.handlers import RotatingFileHandler
